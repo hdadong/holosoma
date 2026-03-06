@@ -20,7 +20,7 @@ dependencies = [
     "mypy==1.14.1",
     "notebook",
     "numpy-stl",
-    "numpy==1.23.5",
+    "numpy>=1.23.5,<2.0",
     "omegaconf",  # Used for config resolvers and DictConfig type hints
     "onnx",
     "onnxruntime",
@@ -29,7 +29,6 @@ dependencies = [
     "plotly",
     "pydantic",
     "pygame",
-    "pynput",
     "pytest",
     "rich",
     "scipy",
@@ -40,12 +39,11 @@ dependencies = [
     "termcolor",
     "tqdm",
     "trimesh",
-    "types-pynput",
     "types-python-dateutil",
     "types-requests",
     "types-tqdm",
     "tyro>=1.0.0",
-    "wandb==0.22.0", # pin version until https://github.com/wandb/wandb/issues/10647 is fixed
+    "wandb>=0.22.3",  # v0.22.3+ supports API keys longer than 40 characters
     "warp-lang==1.10.0",
     "yourdfpy>=0.0.58",
     "zmq",

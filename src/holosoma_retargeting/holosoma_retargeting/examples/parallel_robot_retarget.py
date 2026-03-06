@@ -73,7 +73,7 @@ def find_files(data_dir: Path, data_format: str, object_name: str | None = None)
         # LAFAN: .npy files in root directory
         files = [str(p) for p in data_dir.glob("*.npy")]
         return sorted(files)
-    if data_format == "smplh":
+    if data_format in ("smplh", "skillmimic"):
         # SMPLH/OMOMO: .pt files (optionally filtered by object_name)
         if object_name:
             files = [str(p) for p in data_dir.glob(f"*{object_name}*.pt")]

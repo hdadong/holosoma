@@ -44,6 +44,9 @@ class RetargetingConfig:
     augmentation: bool = False
     """Whether to use augmentation."""
 
+    save_video: str | None = None
+    """Path to save a video of the retargeted motion (e.g., 'output/retarget_video.mp4')."""
+
     # --- Nested configs ---
     robot_config: RobotConfig = field(default_factory=lambda: RobotConfig(robot_type="g1"))
     """Robot configuration (nested - can override robot_urdf_file, robot_dof, etc.

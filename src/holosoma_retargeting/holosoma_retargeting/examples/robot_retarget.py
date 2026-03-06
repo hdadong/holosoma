@@ -14,6 +14,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal
 
+import imageio  # type: ignore[import-not-found]
+import mujoco  # type: ignore[import-not-found]
 import numpy as np
 import tyro
 
@@ -39,6 +41,7 @@ from holosoma_retargeting.src.utils import (  # noqa: E402
     extract_foot_sticking_sequence_velocity,
     extract_object_first_moving_frame,
     load_intermimic_data,
+    load_skillmimic_data,
     load_object_data,
     preprocess_motion_data,
     transform_from_human_to_world,
@@ -152,8 +155,8 @@ def validate_config(cfg: RetargetingConfig) -> None:
     # Task-specific format requirements
     if cfg.task_type == "climbing" and cfg.data_format not in (None, "mocap"):
         raise ValueError("Climbing task requires 'mocap' data format")
-    if cfg.task_type == "object_interaction" and cfg.data_format not in (None, "smplh"):
-        raise ValueError("Object interaction requires 'smplh' data format")
+    if cfg.task_type == "object_interaction" and cfg.data_format not in (None, "smplh", "skillmimic"):
+        raise ValueError("Object interaction requires 'smplh' or 'skillmimic' data format")
     # robot_only accepts any format in the registry (already validated above)
 
 
@@ -222,6 +225,14 @@ def load_motion_data(
 
             human_joints, object_poses = load_intermimic_data(str(pt_path))
             smpl_scale = calculate_scale_factor(task_name, constants.ROBOT_HEIGHT)
+        elif data_format == "skillmimic":
+            pt_path = data_path / f"{task_name}.pt"
+            if not pt_path.exists():
+                raise FileNotFoundError(f"SkillMimic data file not found: {pt_path}")
+
+            human_joints, object_poses = load_skillmimic_data(str(pt_path))
+            default_human_height = motion_data_config.default_human_height or 1.94
+            smpl_scale = constants.ROBOT_HEIGHT / default_human_height
         elif data_format == "mocap":
             downsample = 4
             npy_file = data_path / f"{task_name}.npy"
@@ -258,8 +269,13 @@ def load_motion_data(
         if not pt_path.exists():
             raise FileNotFoundError(f"InterMimic data file not found: {pt_path}")
 
-        human_joints, object_poses = load_intermimic_data(str(pt_path))
-        smpl_scale = calculate_scale_factor(task_name, constants.ROBOT_HEIGHT)
+        if data_format == "skillmimic":
+            human_joints, object_poses = load_skillmimic_data(str(pt_path))
+            default_human_height = motion_data_config.default_human_height or 1.94
+            smpl_scale = constants.ROBOT_HEIGHT / default_human_height
+        else:
+            human_joints, object_poses = load_intermimic_data(str(pt_path))
+            smpl_scale = calculate_scale_factor(task_name, constants.ROBOT_HEIGHT)
 
     elif task_type == "climbing":
         task_dir = data_path / task_name
@@ -593,6 +609,69 @@ def determine_output_path(
     raise ValueError(f"Unknown task type: {task_type}")
 
 
+# ----------------------------- Video Saving -----------------------------
+
+
+def save_retarget_video(
+    npz_path: str,
+    constants: SimpleNamespace,
+    video_path: str,
+    fps: int = 30,
+) -> None:
+    """Replay retargeted motion using MuJoCo offscreen rendering and save as video.
+
+    Args:
+        npz_path: Path to the retargeted motion .npz file.
+        constants: Task constants containing robot/object model info.
+        video_path: Output video file path.
+        fps: Playback FPS.
+    """
+    logger.info("Saving retarget video to: %s", video_path)
+
+    data = np.load(npz_path)
+    qpos_seq = data["qpos"]
+
+    # Determine the XML model path
+    object_name = constants.OBJECT_NAME
+    robot_model_path = constants.ROBOT_URDF_FILE
+    if object_name == "ground":
+        robot_xml_path = robot_model_path.replace(".urdf", ".xml")
+    elif object_name == "multi_boxes":
+        robot_xml_path = constants.SCENE_XML_FILE
+    else:
+        robot_xml_path = robot_model_path.replace(".urdf", "_w_" + object_name + ".xml")
+
+    model = mujoco.MjModel.from_xml_path(robot_xml_path)
+    model.vis.global_.offwidth = 1280
+    model.vis.global_.offheight = 720
+    mj_data = mujoco.MjData(model)
+    renderer = mujoco.Renderer(model, height=720, width=1280)
+
+    os.makedirs(Path(video_path).parent, exist_ok=True)
+    writer = imageio.get_writer(video_path, fps=fps)
+
+    cam = mujoco.MjvCamera()
+    cam.type = mujoco.mjtCamera.mjCAMERA_FREE
+    cam.distance = 2.0
+    cam.elevation = -20.0
+    cam.azimuth = 45.0
+
+    for i in range(qpos_seq.shape[0]):
+        qpos = qpos_seq[i]
+        n = min(len(qpos), model.nq)
+        mj_data.qpos[:n] = qpos[:n]
+        mujoco.mj_forward(model, mj_data)
+
+        cam.lookat[:] = mj_data.qpos[:3]
+        renderer.update_scene(mj_data, camera=cam)
+        frame = renderer.render()
+        writer.append_data(frame)
+
+    writer.close()
+    renderer.close()
+    logger.info("Video saved to: %s", video_path)
+
+
 # ----------------------------- Main -----------------------------
 
 
@@ -715,6 +794,10 @@ def main(cfg: RetargetingConfig) -> None:
         dest_res_path=dest_res_path,
     )
     logger.info("Retargeting complete. Results saved to: %s", dest_res_path)
+
+    # Save video if requested
+    if cfg.save_video:
+        save_retarget_video(dest_res_path, constants, cfg.save_video)
 
     if cfg.retargeter.debug:
         input("Press Enter to exit ...")

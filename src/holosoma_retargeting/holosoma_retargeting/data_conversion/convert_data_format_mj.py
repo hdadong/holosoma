@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Tuple, cast
 
+import imageio  # type: ignore[import-not-found]
 import mujoco  # type: ignore[import-not-found]
 import mujoco.viewer as mjv  # type: ignore[import-not-found]
 import numpy as np
@@ -424,6 +425,19 @@ def run_simulator(args_cli: DataConversionConfig):
     viewer.cam.elevation = -20.0
     viewer.cam.azimuth = 45.0
 
+    # Setup offscreen renderer for video saving
+    save_video = args_cli.save_video
+    video_writer = None
+    renderer = None
+    if save_video:
+        video_dir = Path(save_video).parent
+        os.makedirs(video_dir, exist_ok=True)
+        robot.vis.global_.offwidth = 1280
+        robot.vis.global_.offheight = 720
+        renderer = mujoco.Renderer(robot, height=720, width=1280)
+        video_writer = imageio.get_writer(save_video, fps=args_cli.output_fps)
+        print(f"[INFO]: Video will be saved to {save_video}")
+
     log: dict[str, Any]
     if has_dynamic_object:
         log = {
@@ -521,6 +535,19 @@ def run_simulator(args_cli: DataConversionConfig):
         mujoco.mj_forward(robot, robot_data)
         viewer.sync()
 
+        # Capture frame for video
+        if renderer is not None and video_writer is not None and not file_saved:
+            # Use a scene camera matching the viewer settings
+            cam = mujoco.MjvCamera()
+            cam.type = mujoco.mjtCamera.mjCAMERA_FREE
+            cam.distance = 2.0
+            cam.elevation = -20.0
+            cam.azimuth = 45.0
+            cam.lookat[:] = robot_data.qpos[:3]
+            renderer.update_scene(robot_data, camera=cam)
+            frame = renderer.render()
+            video_writer.append_data(frame)
+
         end_time = time.perf_counter()
         time.sleep(max(0, motion.output_dt - (end_time - start_time)))
 
@@ -584,6 +611,11 @@ def run_simulator(args_cli: DataConversionConfig):
             np.savez(args_cli.output_name, **log)
 
         if args_cli.once and file_saved:
+            if video_writer is not None:
+                video_writer.close()
+                print(f"[INFO]: Video saved to {save_video}")
+            if renderer is not None:
+                renderer.close()
             print("[INFO]: Motion replay completed, exiting...")
             viewer.close()
             break

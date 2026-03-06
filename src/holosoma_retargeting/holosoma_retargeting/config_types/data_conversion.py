@@ -80,6 +80,9 @@ class DataConversionConfig:
     once: bool = False
     """Run the motion once and exit."""
 
+    save_video: str | None = None
+    """Path to save a video of the motion replay (e.g., 'output/video.mp4'). Requires --once."""
+
     use_omniretarget_data: bool = False
     """Use OmniRetarget data format."""
 

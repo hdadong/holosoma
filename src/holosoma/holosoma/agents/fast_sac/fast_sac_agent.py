@@ -4,6 +4,7 @@ import copy
 import itertools
 import math
 import os
+import sys
 from contextlib import contextmanager
 from typing import Any, Callable, Dict, Sequence
 
@@ -647,7 +648,16 @@ class FastSACAgent(BaseAlgo):
     def learn(self) -> None:
         args = self.config
         device = self.device
-        if args.compile:
+        use_compile = args.compile
+        if use_compile and sys.version_info < (3, 9):
+            logger.warning(
+                "Disabling torch.compile for Python %s.%s. Triton/Inductor runtime in this setup requires Python >= 3.9.",
+                sys.version_info.major,
+                sys.version_info.minor,
+            )
+            use_compile = False
+
+        if use_compile:
             update_main = torch.compile(self._update_main)
             update_pol = torch.compile(self._update_pol)
             policy = torch.compile(self.policy)

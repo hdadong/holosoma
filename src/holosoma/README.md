@@ -164,13 +164,16 @@ The training system uses a hierarchical configuration system. The `exp` config s
 ```bash
 source scripts/source_isaacsim_setup.sh
 python src/holosoma/holosoma/train_agent.py \
-    exp:g1-29dof \
+    exp:g1_29dof_wbt_w_object \
+    
     simulator:isaacsim \
     --training.seed 1 \
     --algo.config.use-symmetry=False \
     logger:wandb \
-    --logger.project locomotion-g1-29dof-ppo \
+    --logger.project g1_29dof_wbt_w_object-ppo \
     --logger.name ppo-without-symmetry-seed1
+    --training.headless=False \
+    --training.num_envs=1
 ```
 
 ### Video Recording

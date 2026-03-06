@@ -82,7 +82,8 @@ fast_sac = FastSACAlgoConfig(
         use_tanh=True,
         log_std_max=0.0,
         log_std_min=-5.0,
-        compile=True,
+        # Python 3.8 Isaac Gym envs frequently fail Triton/Inductor JIT at runtime.
+        compile=False,
         obs_normalization=True,
         use_layer_norm=True,
         num_q_networks=2,

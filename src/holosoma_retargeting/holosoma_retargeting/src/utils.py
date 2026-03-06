@@ -35,6 +35,38 @@ def load_intermimic_data(file_path):
     return human_joints, object_poses
 
 
+def load_skillmimic_data(file_path):
+    """
+    Load and preprocess SkillMimic BallPlay(-M) data.
+
+    SkillMimic stores motion in a different layout from InterMimic:
+    - body positions: [165 : 165 + 53*3]  -> (T, 53, 3)
+    - object position: [324 : 327]
+    - object rotation (exp-map): [327 : 330], with sign inversion in official loader
+
+    Returns:
+        tuple: (human_joints, object_poses)
+            - human_joints: (T, 52, 3), first 52 joints from body positions
+            - object_poses: (T, 7) in [qw, qx, qy, qz, x, y, z]
+    """
+    skillmimic_data = torch.load(file_path, map_location="cpu").detach().numpy()
+    if skillmimic_data.ndim != 2 or skillmimic_data.shape[1] < 330:
+        raise ValueError(f"Unexpected SkillMimic tensor shape: {skillmimic_data.shape}")
+
+    body_positions = skillmimic_data[:, 165 : 165 + 53 * 3].reshape(-1, 53, 3)
+    # Retargeting currently expects 52 SMPL-H joints.
+    human_joints = body_positions[:, :52, :]
+
+    object_pos = skillmimic_data[:, 324:327]
+    # Follow SkillMimic's own sign convention when converting exp-map to quaternion.
+    object_rotvec = -skillmimic_data[:, 327:330]
+    object_quat_xyzw = R.from_rotvec(object_rotvec).as_quat()
+    object_quat_wxyz = object_quat_xyzw[:, [3, 0, 1, 2]]
+    object_poses = np.concatenate([object_quat_wxyz, object_pos], axis=1)
+
+    return human_joints, object_poses
+
+
 def calculate_scale_factor(task_name, robot_height):
     """Calculate scale factor based on human height."""
     with open("demo_data/height_dict.pkl", "rb") as f:
@@ -359,11 +391,21 @@ def transform_from_human_to_world(human_initial_root, object_initial_pose, local
         tuple: (world_translation, quaternion) - transformed translation and rotation.
     """
     human_to_object_2d = object_initial_pose[-3:-1] - human_initial_root[:2]
-    x_axis_2d = human_to_object_2d / np.linalg.norm(human_to_object_2d)
-    x_axis = np.array([x_axis_2d[0], x_axis_2d[1], 0.0])
+    human_to_object_norm = np.linalg.norm(human_to_object_2d)
+    # Some datasets have object XY coincident with the human root at the first frame.
+    # Fall back to +X so orientation initialization remains numerically stable.
+    if human_to_object_norm < 1e-8:
+        x_axis = np.array([1.0, 0.0, 0.0])
+    else:
+        x_axis_2d = human_to_object_2d / human_to_object_norm
+        x_axis = np.array([x_axis_2d[0], x_axis_2d[1], 0.0])
     z_axis = np.array([0.0, 0.0, 1.0])
     y_axis = np.cross(z_axis, x_axis)
-    y_axis = y_axis / np.linalg.norm(y_axis)
+    y_axis_norm = np.linalg.norm(y_axis)
+    if y_axis_norm < 1e-8:
+        y_axis = np.array([0.0, 1.0, 0.0])
+    else:
+        y_axis = y_axis / y_axis_norm
 
     rotation_matrix = np.column_stack([x_axis, y_axis, z_axis])
     quat = R.from_matrix(rotation_matrix).as_quat(scalar_first=True)
