@@ -39,23 +39,21 @@ def load_skillmimic_data(file_path):
     """
     Load and preprocess SkillMimic BallPlay(-M) data.
 
-    SkillMimic stores motion in a different layout from InterMimic:
-    - body positions: [165 : 165 + 53*3]  -> (T, 53, 3)
+    SkillMimic stores BallPlay(-M) motion in a different layout from InterMimic:
+    - body positions: [165 : 165 + 53*3] -> (T, 53, 3) in IsaacGym rigid-body order
     - object position: [324 : 327]
     - object rotation (exp-map): [327 : 330], with sign inversion in official loader
 
     Returns:
         tuple: (human_joints, object_poses)
-            - human_joints: (T, 52, 3), first 52 joints from body positions
+            - human_joints: (T, 53, 3)
             - object_poses: (T, 7) in [qw, qx, qy, qz, x, y, z]
     """
     skillmimic_data = torch.load(file_path, map_location="cpu").detach().numpy()
     if skillmimic_data.ndim != 2 or skillmimic_data.shape[1] < 330:
         raise ValueError(f"Unexpected SkillMimic tensor shape: {skillmimic_data.shape}")
 
-    body_positions = skillmimic_data[:, 165 : 165 + 53 * 3].reshape(-1, 53, 3)
-    # Retargeting currently expects 52 SMPL-H joints.
-    human_joints = body_positions[:, :52, :]
+    human_joints = skillmimic_data[:, 165 : 165 + 53 * 3].reshape(-1, 53, 3)
 
     object_pos = skillmimic_data[:, 324:327]
     # Follow SkillMimic's own sign convention when converting exp-map to quaternion.
@@ -273,10 +271,10 @@ def preprocess_motion_data(
     human_joints = human_joints * scale
 
     if object_poses is not None:
-        object_poses[:, -3:-1] = object_poses[:, -3:-1] * scale
-        object_z0 = object_poses[0, -1]
-        dz_scale = (object_poses[:, -1] - object_z0) * scale
-        object_poses[:, -1] = object_z0 + dz_scale
+        # Apply the same world transform used by human joints so relative
+        # human-object geometry is preserved (critical for ball-hand contact).
+        object_poses[:, -1] -= z_min
+        object_poses[:, -3:] *= scale
 
         object_moving_frame_idx = extract_object_first_moving_frame(object_poses)
 

@@ -165,6 +165,249 @@ class InteractionMeshRetargeter:
         self.nominal_tracking_tau = nominal_tracking_tau
         self.track_nominal_indices = task_constants.NOMINAL_TRACKING_INDICES
 
+        self._setup_task_specific_heuristics()
+
+    def _q_slice_local_indices(self, abs_indices: list[int] | tuple[int, ...]) -> np.ndarray:
+        """Map absolute qpos indices to local indices inside self.q_a_indices."""
+        local_indices = []
+        for abs_idx in abs_indices:
+            matches = np.where(self.q_a_indices == abs_idx)[0]
+            if matches.size > 0:
+                local_indices.append(int(matches[0]))
+        return np.asarray(local_indices, dtype=int)
+
+    def _set_abs_joint_bounds(self, abs_idx: int, lower: float | None = None, upper: float | None = None) -> None:
+        """Override selected joint bounds using absolute qpos indices."""
+        local_idx = self._q_slice_local_indices([abs_idx])
+        if local_idx.size == 0:
+            return
+        if lower is not None:
+            self.q_a_lb[local_idx[0]] = max(self.q_a_lb[local_idx[0]], lower)
+        if upper is not None:
+            self.q_a_ub[local_idx[0]] = min(self.q_a_ub[local_idx[0]], upper)
+
+    def _boost_abs_joint_cost(self, abs_indices: list[int] | tuple[int, ...], value: float) -> None:
+        """Increase pose regularization on selected joints."""
+        local_indices = self._q_slice_local_indices(abs_indices)
+        if local_indices.size == 0:
+            return
+        self.Q_diag[local_indices] = np.maximum(self.Q_diag[local_indices], value)
+
+    def _setup_task_specific_heuristics(self) -> None:
+        """Enable additional guidance for tasks that need tighter geometric control."""
+        self.demo_hand_joint_to_link: dict[str, str] = {}
+        self.enable_demo_hand_guidance = False
+        self.hand_object_tracking_weight = 0.0
+        self.hand_object_contact_weight = 0.0
+        self.hand_object_contact_activation_margin = 0.0
+        self.hand_object_contact_detection_threshold = 0.0
+        self.hand_object_target_gap = 0.0
+
+        self.self_collision_pairs: list[tuple[str, str, float]] = []
+        self.self_collision_detection_threshold = 0.0
+        self.self_collision_slack_weight = 0.0
+
+        if (self.task_constants.robot_type if hasattr(self.task_constants, "robot_type") else "") == "g1":
+            self._boost_abs_joint_cost([19, 20], 0.2)
+
+        if self.object_name != "basketball":
+            return
+
+        hand_links = {"left_rubber_hand_link", "right_rubber_hand_link"}
+        self.demo_hand_joint_to_link = {
+            demo_joint: link_name
+            for demo_joint, link_name in self.laplacian_match_links.items()
+            if link_name in hand_links
+        }
+        self.enable_demo_hand_guidance = bool(self.demo_hand_joint_to_link)
+        self.hand_object_tracking_weight = 40.0
+        self.hand_object_contact_weight = 80.0
+        self.hand_object_contact_activation_margin = 0.10
+        self.hand_object_contact_detection_threshold = 0.25
+        self.hand_object_target_gap = 0.005
+
+        self.self_collision_pairs = [
+            ("left_rubber_hand_link", "torso_link", 0.05),
+            ("right_rubber_hand_link", "torso_link", 0.05),
+            ("left_rubber_hand_link", "pelvis_contour_link", 0.05),
+            ("right_rubber_hand_link", "pelvis_contour_link", 0.05),
+            ("left_rubber_hand_link", "head_link", 0.04),
+            ("right_rubber_hand_link", "head_link", 0.04),
+            ("left_wrist_yaw_link", "torso_link", 0.04),
+            ("right_wrist_yaw_link", "torso_link", 0.04),
+            ("left_elbow_link", "torso_link", 0.04),
+            ("right_elbow_link", "torso_link", 0.04),
+            ("left_rubber_hand_link", "right_rubber_hand_link", 0.08),
+        ]
+        self.self_collision_detection_threshold = 0.14
+        self.self_collision_slack_weight = 400.0
+
+        # Basketball sequences are sensitive to overly flexible G1 shoulders.
+        self._set_abs_joint_bounds(23, lower=-1.2, upper=1.8)
+        self._set_abs_joint_bounds(24, lower=-1.8, upper=1.8)
+        self._set_abs_joint_bounds(25, lower=-0.25, upper=1.75)
+        self._set_abs_joint_bounds(30, lower=-1.8, upper=1.2)
+        self._set_abs_joint_bounds(31, lower=-1.8, upper=1.8)
+        self._set_abs_joint_bounds(32, lower=-0.25, upper=1.75)
+
+        self._boost_abs_joint_cost([22, 23, 24, 25, 29, 30, 31, 32], 0.03)
+        self._boost_abs_joint_cost([26, 27, 28, 33, 34, 35], 0.05)
+
+        if np.isscalar(self.smooth_weight):
+            smooth_weight = np.full(self.nq_a, float(self.smooth_weight), dtype=float)
+        else:
+            smooth_weight = np.asarray(self.smooth_weight, dtype=float).copy()
+        smooth_weight[self._q_slice_local_indices([22, 23, 24, 25, 29, 30, 31, 32])] = 0.45
+        smooth_weight[self._q_slice_local_indices([26, 27, 28, 33, 34, 35])] = 0.75
+        self.smooth_weight = smooth_weight
+
+    def _build_demo_contact_targets(
+        self,
+        human_mapped_joints: np.ndarray,
+        object_quat_demo: np.ndarray,
+        object_trans_demo: np.ndarray,
+        object_points_local_demo: np.ndarray,
+    ) -> dict[str, dict[str, np.ndarray | str]]:
+        """Build strong hand-object targets when the demo hand is close to the basketball."""
+        if not self.enable_demo_hand_guidance:
+            return {}
+
+        joint_targets = dict(zip(self.laplacian_match_links.keys(), human_mapped_joints))
+        object_radius = float(np.max(np.linalg.norm(object_points_local_demo, axis=1)))
+        activation_threshold = object_radius + self.hand_object_contact_activation_margin
+
+        contact_targets: dict[str, dict[str, np.ndarray | str]] = {}
+        for demo_joint, link_name in self.demo_hand_joint_to_link.items():
+            if demo_joint not in joint_targets:
+                continue
+            hand_pos_world = joint_targets[demo_joint]
+            if np.linalg.norm(hand_pos_world - object_trans_demo) > activation_threshold:
+                continue
+            hand_pos_object = transform_points_world_to_local(
+                object_quat_demo, object_trans_demo, hand_pos_world[None]
+            )[0]
+            contact_targets[demo_joint] = {"link": link_name, "target": hand_pos_object}
+
+        return contact_targets
+
+    def _build_demo_hand_guidance_terms(
+        self,
+        q: np.ndarray,
+        dqa: cp.Variable,
+        contact_link_targets: dict[str, dict[str, np.ndarray | str]],
+    ) -> list[cp.Expression]:
+        """Track demo hand positions in the object frame when contact is active."""
+        if not contact_link_targets:
+            return []
+
+        links = {name: str(target["link"]) for name, target in contact_link_targets.items()}
+        J_OC_dict, p_OC_dict, _ = self._calc_manipulator_jacobians(q, links=links, obj_frame=True)
+
+        obj_terms: list[cp.Expression] = []
+        for name, target in contact_link_targets.items():
+            target_pos = np.asarray(target["target"], dtype=float)
+            position_error = target_pos - p_OC_dict[name]
+            obj_terms.append(
+                self.hand_object_tracking_weight * cp.sum_squares(J_OC_dict[name] @ dqa - position_error)
+            )
+        return obj_terms
+
+    def _build_hand_object_contact_terms(
+        self,
+        q: np.ndarray,
+        dqa: cp.Variable,
+        contact_link_targets: dict[str, dict[str, np.ndarray | str]],
+    ) -> list[cp.Expression]:
+        """Encourage the active hand geometry to stay in light contact with the basketball."""
+        if self.object_name != "basketball" or not contact_link_targets:
+            return []
+
+        object_geom_id = mujoco.mj_name2id(self.robot_model, mujoco.mjtObj.mjOBJ_GEOM, "basketball")
+        if object_geom_id == -1:
+            return []
+
+        self.robot_data.qpos[:] = q
+        mujoco.mj_forward(self.robot_model, self.robot_data)
+
+        obj_terms: list[cp.Expression] = []
+        fromto = np.zeros(6, dtype=float)
+        for target in contact_link_targets.values():
+            hand_geom_name = str(target["link"])
+            hand_geom_id = mujoco.mj_name2id(self.robot_model, mujoco.mjtObj.mjOBJ_GEOM, hand_geom_name)
+            if hand_geom_id == -1:
+                continue
+
+            fromto[:] = 0.0
+            dist = mujoco.mj_geomDistance(
+                self.robot_model,
+                self.robot_data,
+                hand_geom_id,
+                object_geom_id,
+                self.hand_object_contact_detection_threshold,
+                fromto,
+            )
+            if dist > self.hand_object_contact_detection_threshold:
+                continue
+
+            J_rel = self._compute_jacobian_for_contact_relative(
+                self.robot_model.geom(hand_geom_id),
+                self.robot_model.geom(object_geom_id),
+                hand_geom_name,
+                "basketball",
+                fromto,
+                dist,
+            )[self.q_a_indices]
+            obj_terms.append(
+                self.hand_object_contact_weight
+                * cp.square(J_rel @ dqa + float(dist) - self.hand_object_target_gap)
+            )
+
+        return obj_terms
+
+    def _build_self_collision_terms(self, q: np.ndarray, dqa: cp.Variable) -> tuple[list[cp.Constraint], list[cp.Expression]]:
+        """Guard a small set of problematic robot self-collision pairs with soft slack."""
+        if not self.self_collision_pairs:
+            return [], []
+
+        self.robot_data.qpos[:] = q
+        mujoco.mj_forward(self.robot_model, self.robot_data)
+
+        constraints: list[cp.Constraint] = []
+        obj_terms: list[cp.Expression] = []
+        fromto = np.zeros(6, dtype=float)
+
+        for geom1_name, geom2_name, clearance in self.self_collision_pairs:
+            geom1_id = mujoco.mj_name2id(self.robot_model, mujoco.mjtObj.mjOBJ_GEOM, geom1_name)
+            geom2_id = mujoco.mj_name2id(self.robot_model, mujoco.mjtObj.mjOBJ_GEOM, geom2_name)
+            if geom1_id == -1 or geom2_id == -1:
+                continue
+
+            fromto[:] = 0.0
+            dist = mujoco.mj_geomDistance(
+                self.robot_model,
+                self.robot_data,
+                geom1_id,
+                geom2_id,
+                self.self_collision_detection_threshold,
+                fromto,
+            )
+            if dist > self.self_collision_detection_threshold:
+                continue
+
+            J_rel = self._compute_jacobian_for_contact_relative(
+                self.robot_model.geom(geom1_id),
+                self.robot_model.geom(geom2_id),
+                geom1_name,
+                geom2_name,
+                fromto,
+                dist,
+            )[self.q_a_indices]
+            slack = cp.Variable(nonneg=True)
+            constraints.append(J_rel @ dqa + slack >= clearance - float(dist))
+            obj_terms.append(self.self_collision_slack_weight * cp.square(slack))
+
+        return constraints, obj_terms
+
     def _setup_visualization(self):
         """Setup Viser visualization components."""
         self.server = viser.ViserServer()
@@ -378,6 +621,12 @@ class InteractionMeshRetargeter:
                 # Create adjacency list and calculate target Laplacian coordinates
                 adj_list = get_adjacency_list(source_tetrahedra, len(source_vertices))
                 target_laplacian = calculate_laplacian_coordinates(source_vertices, adj_list)
+                contact_link_targets = self._build_demo_contact_targets(
+                    human_mapped_joints,
+                    object_quat_demo,
+                    object_trans_demo,
+                    object_points_local_demo,
+                )
 
                 # Run optimization
                 if original:
@@ -395,6 +644,7 @@ class InteractionMeshRetargeter:
                     foot_sticking=foot_sticking_sequences[i],
                     w_nominal_tracking=w_nominal_tracking,
                     q_a_nominal=(q_nominal_list[i, self.q_a_indices] if q_nominal_list is not None else None),
+                    contact_link_targets=contact_link_targets,
                     init_t=i == 0,
                     n_iter=50 if i == 0 else 10,
                 )
@@ -485,6 +735,7 @@ class InteractionMeshRetargeter:
         foot_sticking: tuple[bool, bool],
         w_nominal_tracking: float = 0.0,
         q_a_nominal: np.ndarray | None = None,
+        contact_link_targets: dict[str, dict[str, np.ndarray | str]] | None = None,
         verbose=False,
         init_t=False,
     ):
@@ -540,6 +791,7 @@ class InteractionMeshRetargeter:
         # Decision variables
         dqa = cp.Variable(len(self.q_a_indices), name="dqa")
         lap_var = cp.Variable(3 * V, name="laplacian")
+        obj_terms: list[cp.Expression] = []
 
         # Constraints list
         constraints = []
@@ -582,6 +834,10 @@ class InteractionMeshRetargeter:
             rhs = -phi - self.penetration_tolerance
             constraints += [Ja_n @ dqa >= rhs]
 
+        self_collision_constraints, self_collision_terms = self._build_self_collision_terms(q, dqa)
+        constraints.extend(self_collision_constraints)
+        obj_terms.extend(self_collision_terms)
+
         # Joint limits constraints (actuated)
         if self.activate_joint_limits:
             constraints += [
@@ -593,8 +849,6 @@ class InteractionMeshRetargeter:
         constraints += [cp.SOC(self.step_size, dqa)]
 
         # Objective
-        obj_terms = []
-
         obj_terms.append(cp.sum_squares(cp.multiply(sqrt_w3, lap_var - target_lap_vec)))
 
         # nominal tracking for selected indices
@@ -619,6 +873,10 @@ class InteractionMeshRetargeter:
             else:
                 # if a full matrix was supplied, fall back to quad_form
                 obj_terms.append(cp.quad_form(dqa - dqa_smooth, Wsmooth))
+
+        if contact_link_targets:
+            obj_terms.extend(self._build_demo_hand_guidance_terms(q, dqa, contact_link_targets))
+            obj_terms.extend(self._build_hand_object_contact_terms(q, dqa, contact_link_targets))
 
         problem = cp.Problem(cp.Minimize(cp.sum(obj_terms)), constraints)
 
@@ -653,6 +911,7 @@ class InteractionMeshRetargeter:
         foot_sticking: tuple[bool, bool],
         w_nominal_tracking: float = 0.0,
         q_a_nominal: np.ndarray | None = None,
+        contact_link_targets: dict[str, dict[str, np.ndarray | str]] | None = None,
         init_t: bool = False,
         n_iter: int = 10,
     ):
@@ -670,6 +929,7 @@ class InteractionMeshRetargeter:
                 foot_sticking=foot_sticking,
                 q_a_nominal=q_a_nominal,
                 w_nominal_tracking=w_nominal_tracking,
+                contact_link_targets=contact_link_targets,
                 init_t=init_t,
             )
             if np.isclose(cost, last_cost):
