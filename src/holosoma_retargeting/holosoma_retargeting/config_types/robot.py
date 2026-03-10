@@ -171,6 +171,10 @@ class RobotConfig:
         if self.robot_type == "g1":
             base.update(
                 {
+                    "8": -0.5,  # left hip roll (keep within a symmetric normal operating range)
+                    "9": -2.0,  # left hip yaw (avoid extreme pelvis-twist compensation)
+                    "14": -0.5,  # right hip roll
+                    "15": -2.0,  # right hip yaw
                     "20": -0.3,  # waist roll
                     "21": -0.1,  # waist pitch
                     "26": -0.1,  # right wrist
@@ -196,7 +200,12 @@ class RobotConfig:
         if self.robot_type == "g1":
             base.update(
                 {
+                    "8": 0.5,  # left hip roll (avoid extreme side-bending posture)
+                    "9": 2.0,  # left hip yaw
+                    "14": 0.5,  # right hip roll
+                    "15": 2.0,  # right hip yaw
                     "20": 0.3,  # waist roll
+                    "21": 0.3,  # waist pitch (limit forward bend to avoid hip-thrust posture)
                     "25": 1.4,  # right elbow
                     "26": 0.2,  # right wrist
                     "27": 0.3,
@@ -218,7 +227,15 @@ class RobotConfig:
             return self.manual_cost
 
         if self.robot_type == "g1":
-            return {"19": 0.2, "20": 0.2}  # waist yaw, waist roll
+            return {
+                "8": 0.05,  # left hip roll
+                "9": 0.05,  # left hip yaw
+                "14": 0.05,  # right hip roll
+                "15": 0.05,  # right hip yaw
+                "19": 0.2,  # waist yaw
+                "20": 0.2,  # waist roll
+                "21": 0.2,  # waist pitch
+            }
         return {}
 
     MANUAL_COST = property(_manual_cost, doc="Get manual cost weights.")

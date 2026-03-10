@@ -50,6 +50,7 @@ class InteractionMeshRetargeter:
         activate_obj_non_penetration: bool = True,
         activate_joint_limits: bool = True,
         step_size: float = 0.2,
+        joint_limit_margin: float = 0.01,
         collision_detection_threshold: float = 0.1,
         penetration_tolerance: float = 1e-3,
         foot_sticking_tolerance: float = 1e-3,
@@ -86,6 +87,7 @@ class InteractionMeshRetargeter:
         self.activate_foot_sticking = activate_foot_sticking
         self.activate_obj_non_penetration = activate_obj_non_penetration
         self.activate_joint_limits = activate_joint_limits
+        self.joint_limit_margin = max(float(joint_limit_margin), 0.0)
         self.foot_links = dict(zip(task_constants.FOOT_STICKING_LINKS, task_constants.FOOT_STICKING_LINKS))
         self.penetration_tolerance = penetration_tolerance
         self.step_size = step_size
@@ -145,21 +147,16 @@ class InteractionMeshRetargeter:
             [large_number * np.ones(n_floating_base), self.robot_model.jnt_range[[i for i, _ in actuated_joints], 1]]
         )
 
-        self.q_a_lb = complete_lower_limits[self.q_a_indices]
-        self.q_a_ub = complete_upper_limits[self.q_a_indices]
+        self.q_a_lb = np.array(complete_lower_limits[self.q_a_indices], dtype=float, copy=True)
+        self.q_a_ub = np.array(complete_upper_limits[self.q_a_indices], dtype=float, copy=True)
 
-        self.q_a_lb[np.array(list(self.task_constants.MANUAL_LB.keys())).astype(int)] = list(
-            self.task_constants.MANUAL_LB.values()
-        )
-        self.q_a_ub[np.array(list(self.task_constants.MANUAL_UB.keys())).astype(int)] = list(
-            self.task_constants.MANUAL_UB.values()
-        )
+        self._apply_manual_overrides(self.q_a_lb, self.task_constants.MANUAL_LB)
+        self._apply_manual_overrides(self.q_a_ub, self.task_constants.MANUAL_UB)
+        self._shrink_joint_limits_with_margin()
 
-        # Prevent too much waist twist
-        self.Q_diag = np.zeros(self.nq_a) * 1e-3
-        self.Q_diag[np.array(list(self.task_constants.MANUAL_COST.keys())).astype(int)] = list(
-            self.task_constants.MANUAL_COST.values()
-        )
+        # Pose regularization on selected joints.
+        self.Q_diag = np.zeros(self.nq_a, dtype=float)
+        self._apply_manual_overrides(self.Q_diag, self.task_constants.MANUAL_COST)
 
         self.w_nominal_tracking_init = w_nominal_tracking_init
         self.nominal_tracking_tau = nominal_tracking_tau
@@ -175,6 +172,34 @@ class InteractionMeshRetargeter:
             if matches.size > 0:
                 local_indices.append(int(matches[0]))
         return np.asarray(local_indices, dtype=int)
+
+    def _apply_manual_overrides(self, target: np.ndarray, overrides: dict[str, float] | None) -> None:
+        """Apply manual values specified in absolute qpos indices to a local optimization slice."""
+        if not overrides:
+            return
+        for idx_str, value in overrides.items():
+            abs_idx = int(idx_str)
+            matches = np.where(self.q_a_indices == abs_idx)[0]
+            if matches.size == 0:
+                continue
+            target[int(matches[0])] = float(value)
+
+    def _shrink_joint_limits_with_margin(self) -> None:
+        """Shrink actuated-joint bounds by a safety margin to avoid boundary-hitting poses."""
+        if (not self.activate_joint_limits) or self.joint_limit_margin <= 0.0:
+            return
+        for local_idx, abs_idx in enumerate(self.q_a_indices):
+            # Keep floating-base part unchanged; margin is for actuated joints only.
+            if int(abs_idx) < 7:
+                continue
+            lb = float(self.q_a_lb[local_idx])
+            ub = float(self.q_a_ub[local_idx])
+            span = ub - lb
+            if not np.isfinite(span) or span <= 0.0:
+                continue
+            margin = min(self.joint_limit_margin, 0.49 * span)
+            self.q_a_lb[local_idx] = lb + margin
+            self.q_a_ub[local_idx] = ub - margin
 
     def _boost_abs_joint_cost(self, abs_indices: list[int] | tuple[int, ...], value: float) -> None:
         """Increase pose regularization on selected joints."""
@@ -656,6 +681,9 @@ class InteractionMeshRetargeter:
 
         q_star = np.copy(q)
         q_star[self.q_a_indices] = dqa_star + q_a_n_last
+        # Guard against tiny solver inaccuracies: keep optimized joints strictly inside configured bounds.
+        if self.activate_joint_limits:
+            q_star[self.q_a_indices] = np.clip(q_star[self.q_a_indices], self.q_a_lb, self.q_a_ub)
         q_star[3:7] /= np.linalg.norm(q_star[3:7]) + 1e-12
 
         return q_star, cost
