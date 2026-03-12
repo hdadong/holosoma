@@ -10,20 +10,12 @@ import re
 from pathlib import Path
 
 import numpy as np
+import smplx  # type: ignore[import-not-found]
+import torch
 import trimesh
 from jinja2 import Template
 from scipy.spatial import Delaunay  # type: ignore[import-untyped]
 from scipy.spatial.transform import Rotation as R  # type: ignore[import-untyped]  # noqa: N817
-
-try:
-    import torch
-except ImportError:
-    torch = None
-
-try:
-    import smplx  # type: ignore[import-not-found]
-except ImportError:
-    smplx = None
 
 
 def load_intermimic_data(file_path):
@@ -36,9 +28,6 @@ def load_intermimic_data(file_path):
     Returns:
         tuple: (human_joints, object_poses) - processed data.
     """
-    if torch is None:
-        raise ImportError("torch is required for load_intermimic_data. Install it before reading .pt motion data.")
-
     intermimic_data = torch.load(file_path, map_location="cpu").detach().numpy()
     human_joints = intermimic_data[:, 162 : 162 + 52 * 3].reshape(-1, 52, 3)
     # Reorder quaternion from [qx, qy, qz, qw] to [qw, qx, qy, qz]
@@ -60,9 +49,6 @@ def load_skillmimic_data(file_path):
             - human_joints: (T, 53, 3)
             - object_poses: (T, 7) in [qw, qx, qy, qz, x, y, z]
     """
-    if torch is None:
-        raise ImportError("torch is required for load_skillmimic_data. Install it before reading .pt motion data.")
-
     skillmimic_data = torch.load(file_path, map_location="cpu").detach().numpy()
     if skillmimic_data.ndim != 2 or skillmimic_data.shape[1] < 330:
         raise ValueError(f"Unexpected SkillMimic tensor shape: {skillmimic_data.shape}")
@@ -580,12 +566,6 @@ def load_smpl_motion(model_path, motion_file):
         smplx.SMPL: The loaded SMPL model object.
     """
     print("Loading SMPL model and motion...")
-    if torch is None:
-        raise ImportError("torch is required for load_smpl_motion. Install it with `pip install torch`.")
-
-    if smplx is None:
-        raise ImportError("smplx is required for load_smpl_motion. Install it with `pip install smplx`.")
-
     model = smplx.SMPL(model_path=model_path, gender="neutral", ext="pkl").to("cpu")
     motion_data = np.load(motion_file)
 

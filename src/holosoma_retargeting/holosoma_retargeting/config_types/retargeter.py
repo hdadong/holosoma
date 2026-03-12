@@ -35,9 +35,6 @@ class RetargeterConfig:
     step_size: float = 0.2
     """Trust region for each SQP iteration."""
 
-    joint_limit_margin: float = 0.01
-    """Safety margin (rad) kept away from joint bounds to avoid visually hitting limits."""
-
     visualize: bool = False
     """Whether to visualize the retargeting process."""
 
