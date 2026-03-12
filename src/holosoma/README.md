@@ -93,6 +93,17 @@ python src/holosoma/holosoma/train_agent.py \
     exp:g1-29dof-wbt-fast-sac \
     logger:wandb
 
+source scripts/source_isaacsim_setup.sh
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+CUDA_VISIBLE_DEVICES=0,1 \
+torchrun --standalone --nnodes=1 --nproc_per_node=2 \
+  src/holosoma/holosoma/train_agent.py \
+  exp:g1-29dof-wbt-fast-sac \
+  logger:wandb \
+  --training.num-envs 8192 \
+  --algo.config.buffer-size 512
+
+
 # G1 with PPO
 source scripts/source_isaacsim_setup.sh
 python src/holosoma/holosoma/train_agent.py \
