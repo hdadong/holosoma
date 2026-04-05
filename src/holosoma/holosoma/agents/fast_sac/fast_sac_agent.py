@@ -999,7 +999,15 @@ class FastSACAgent(BaseAlgo):
                 self.obs_normalizer.train()
 
     @torch.no_grad()
-    def evaluate_policy(self, max_eval_steps: int | None = None):
+    def evaluate_policy(
+        self,
+        max_eval_steps: int | None = None,
+        save_fpv: bool = False,
+        fpv_output_dir: str = "./fpv_eval_output",
+        fpv_width: int = 640,
+        fpv_height: int = 480,
+        fpv_fov: float = 60.0,
+    ):
         self.env.set_is_evaluating()
         obs = self.env.reset()
 
@@ -1008,15 +1016,40 @@ class FastSACAgent(BaseAlgo):
         episode_steps = 0
         num_episodes = 0
         step = 0
+        # Record joint states for offline FPV rendering
+        recorded_qpos: list = []
 
         for _ in itertools.islice(itertools.count(), max_eval_steps):
             if self.obs_normalization:
                 normalized_obs = self.obs_normalizer(obs, update=False)
             else:
                 normalized_obs = obs
-            # Actions are already scaled by the actor
             actions = self.actor(normalized_obs)[0]
             obs, reward, done, info = self.env.step(actions)
+
+            # Record robot + object state for offline rendering
+            if save_fpv:
+                try:
+                    sim = self.env.simulator
+                    root_state = sim.robot_root_states[:1].detach().cpu().numpy().reshape(-1)
+                    dof_state = sim.dof_pos[:1].detach().cpu().numpy().reshape(-1)
+                    frame_data = {
+                        'root_pos': root_state[:3].copy(),
+                        'root_quat_xyzw': root_state[3:7].copy(),
+                        'dof_pos': dof_state.copy(),
+                    }
+                    # Get object state via command manager
+                    mc = self.env.command_manager.get_state("motion_command")
+                    if mc is not None and hasattr(mc, 'simulator_object_pos_w'):
+                        obj_pos = mc.simulator_object_pos_w[0].detach().cpu().numpy()
+                        obj_quat = mc.simulator_object_quat_w[0].detach().cpu().numpy()
+                        frame_data['obj_pos'] = obj_pos.copy()
+                        frame_data['obj_quat_xyzw'] = obj_quat.copy()
+                    recorded_qpos.append(frame_data)
+                except Exception as e:
+                    if step == 1:
+                        logger.warning(f"[eval] Failed to record state: {e}")
+                        save_fpv = False
 
             reward_scalar = reward.sum().item() if hasattr(reward, 'sum') else float(reward)
             episode_reward += reward_scalar
@@ -1026,7 +1059,6 @@ class FastSACAgent(BaseAlgo):
             if step % 50 == 0:
                 logger.info(f"[eval] step={step} episode_reward={episode_reward:.3f} episode_steps={episode_steps}")
 
-            # Check if any env is done
             done_any = done.any().item() if hasattr(done, 'any') else bool(done)
             if done_any:
                 num_episodes += 1
@@ -1048,4 +1080,136 @@ class FastSACAgent(BaseAlgo):
                 f"total_steps={step}"
             )
         else:
-            logger.info(f"[eval] Summary: {step} steps, accumulated_reward={episode_reward:.3f} (no episode completed)")
+            logger.info(
+                f"[eval] Summary: {step} steps, "
+                f"accumulated_reward={episode_reward:.3f} "
+                f"(no episode completed)"
+            )
+
+        # Save recorded states and render FPV offline with MuJoCo
+        if save_fpv and recorded_qpos:
+            self._render_fpv_offline(
+                recorded_qpos, fpv_output_dir,
+                fpv_width, fpv_height, fpv_fov,
+            )
+
+    def _render_fpv_offline(
+        self,
+        recorded_qpos: list[dict],
+        fpv_output_dir: str,
+        width: int,
+        height: int,
+        fov: float,
+    ):
+        """Render FPV images offline using MuJoCo from recorded states."""
+        import os
+        from pathlib import Path
+
+        import numpy as np
+
+        out_dir = Path(fpv_output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save raw states as npz for reuse
+        npz_path = out_dir / "recorded_states.npz"
+        save_data = {
+            'root_pos': np.array([q['root_pos'] for q in recorded_qpos]),
+            'root_quat_xyzw': np.array([q['root_quat_xyzw'] for q in recorded_qpos]),
+            'dof_pos': np.array([q['dof_pos'] for q in recorded_qpos]),
+        }
+        if 'obj_pos' in recorded_qpos[0]:
+            save_data['obj_pos'] = np.array([q['obj_pos'] for q in recorded_qpos])
+            save_data['obj_quat_xyzw'] = np.array([q['obj_quat_xyzw'] for q in recorded_qpos])
+        np.savez(npz_path, **save_data)
+        logger.info(f"[eval] Saved {len(recorded_qpos)} states to {npz_path}")
+
+        # Try MuJoCo offline rendering
+        try:
+            os.environ.setdefault("MUJOCO_GL", "egl")
+            import mujoco
+
+            # Find the robot XML
+            robot_cfg = self.env.cfg.robot
+            xml_file = robot_cfg.asset.xml_file
+            asset_root = robot_cfg.asset.asset_root
+            if asset_root.startswith("@holosoma/"):
+                import holosoma
+                pkg_dir = Path(holosoma.__path__[0])
+                asset_root = str(pkg_dir / asset_root.replace("@holosoma/", ""))
+            xml_path = os.path.join(asset_root, xml_file)
+            logger.info(f"[eval] Loading MuJoCo model: {xml_path}")
+
+            model = mujoco.MjModel.from_xml_path(xml_path)
+            data = mujoco.MjData(model)
+            renderer = mujoco.Renderer(model, height=height, width=width)
+
+            # Get head body id for FPV camera
+            head_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "head_link")
+            if head_id < 0:
+                head_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "torso_link")
+            logger.info(f"[eval] FPV camera body id: {head_id}")
+
+            frames = []
+            for i, qstate in enumerate(recorded_qpos):
+                # Set root position and orientation
+                root_pos = qstate['root_pos']
+                root_quat_xyzw = qstate['root_quat_xyzw']
+                # MuJoCo uses wxyz quaternion
+                root_quat_wxyz = np.array([
+                    root_quat_xyzw[3],
+                    root_quat_xyzw[0],
+                    root_quat_xyzw[1],
+                    root_quat_xyzw[2],
+                ])
+                data.qpos[:3] = root_pos
+                data.qpos[3:7] = root_quat_wxyz
+                data.qpos[7:7 + len(qstate['dof_pos'])] = qstate['dof_pos']
+
+                mujoco.mj_forward(model, data)
+
+                # Set camera to head position (FPV)
+                head_pos = data.xpos[head_id]
+                head_mat = data.xmat[head_id].reshape(3, 3)
+                # Camera looks forward (x-axis of head frame)
+                lookat = head_pos + head_mat[:, 0] * 0.5
+                cam = mujoco.MjvCamera()
+                cam.type = mujoco.mjtCamera.mjCAMERA_FREE
+                cam.lookat[:] = lookat
+                cam.distance = 0.01
+                cam.azimuth = np.degrees(np.arctan2(head_mat[1, 0], head_mat[0, 0]))
+                cam.elevation = np.degrees(-np.arcsin(np.clip(head_mat[2, 0], -1, 1)))
+
+                renderer.update_scene(data, camera=cam)
+                frame = renderer.render()
+                frames.append(frame.copy())
+
+            renderer.close()
+
+            # Save frames as images
+            from PIL import Image
+            for i, frame in enumerate(frames):
+                Image.fromarray(frame).save(out_dir / f"fpv_{i:06d}.png")
+            logger.info(f"[eval] Saved {len(frames)} FPV frames to {out_dir}")
+
+            # Create mp4
+            mp4_path = out_dir / "fpv_eval.mp4"
+            try:
+                import subprocess
+                fps = 50  # control frequency
+                cmd = [
+                    "ffmpeg", "-y",
+                    "-framerate", str(fps),
+                    "-i", str(out_dir / "fpv_%06d.png"),
+                    "-c:v", "libx264",
+                    "-pix_fmt", "yuv420p",
+                    "-crf", "18",
+                    str(mp4_path),
+                ]
+                subprocess.run(cmd, check=True, capture_output=True)
+                logger.info(f"[eval] Saved FPV video: {mp4_path} ({len(frames)} frames, {fps} fps)")
+            except Exception as e:
+                logger.warning(f"[eval] ffmpeg failed: {e}. Frames saved as PNG.")
+
+        except Exception as e:
+            logger.warning(f"[eval] MuJoCo offline rendering failed: {e}")
+            logger.info(f"[eval] Raw states saved to {out_dir / 'recorded_states.npz'} for manual rendering.")

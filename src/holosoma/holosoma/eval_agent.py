@@ -29,6 +29,10 @@ def run_eval_with_tyro(
     saved_config: ExperimentConfig,
     saved_wandb_path: str | None,
 ):
+    # Note: FPV camera setup is handled inside evaluate_policy.
+    # We do NOT enable headless_recording here because the rendering kit
+    # triggers GLXBadFBConfig on headless servers without proper GLX support.
+
     # Use shared simulation environment setup
     env, device, simulation_app = setup_simulation_environment(tyro_config)
 
@@ -73,6 +77,11 @@ def run_eval_with_tyro(
 
     algo.evaluate_policy(
         max_eval_steps=tyro_config.training.max_eval_steps,
+        save_fpv=checkpoint_cfg.save_fpv,
+        fpv_output_dir=checkpoint_cfg.fpv_output_dir,
+        fpv_width=checkpoint_cfg.fpv_width,
+        fpv_height=checkpoint_cfg.fpv_height,
+        fpv_fov=checkpoint_cfg.fpv_fov,
     )
 
     # Cleanup simulation app

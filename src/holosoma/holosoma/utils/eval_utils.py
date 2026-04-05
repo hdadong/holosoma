@@ -61,6 +61,16 @@ def init_eval_logging() -> None:
 class CheckpointConfig:
     checkpoint: str | None = None
     """Path to a local checkpoint file, or W&B URI in the format `wandb://<entity>/<project>/<run_id>[/<checkpoint_name>]`."""
+    save_fpv: bool = False
+    """Save first-person view (FPV) images and video during evaluation."""
+    fpv_output_dir: str = "./fpv_eval_output"
+    """Output directory for FPV images and video."""
+    fpv_width: int = 640
+    """FPV image width in pixels."""
+    fpv_height: int = 480
+    """FPV image height in pixels."""
+    fpv_fov: float = 60.0
+    """FPV vertical field of view in degrees."""
 
 
 def load_saved_experiment_config(checkpoint_cfg: CheckpointConfig) -> tuple[ExperimentConfig, str | None]:
