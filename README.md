@@ -119,6 +119,96 @@ Watch real-world deployments of Holosoma policies *(click thumbnails to play)*
 </table>
 
 
+## Headless Server Setup (IsaacSim on servers without a display)
+
+When running IsaacSim on a headless server (no monitor), several extra steps are required:
+
+### 1. Start NVIDIA Xorg virtual display
+
+IsaacSim's Vulkan backend requires an X display backed by the NVIDIA GPU driver (Xvfb does NOT work):
+
+```bash
+# Create xorg config (adjust BusID to match your GPU: nvidia-smi --query-gpu=pci.bus_id --format=csv,noheader)
+cat > /tmp/xorg_headless.conf << 'EOF'
+Section "ServerLayout"
+    Identifier "Layout0"
+    Screen 0 "Screen0"
+EndSection
+Section "Device"
+    Identifier "Device0"
+    Driver "nvidia"
+    BusID "PCI:1:0:0"
+    Option "AllowEmptyInitialConfiguration"
+EndSection
+Section "Screen"
+    Identifier "Screen0"
+    Device "Device0"
+    DefaultDepth 24
+    SubSection "Display"
+        Depth 24
+        Virtual 1024 768
+    EndSubSection
+EndSection
+EOF
+
+# Start Xorg (requires root)
+sudo bash -c '/usr/lib/xorg/Xorg :99 -config /tmp/xorg_headless.conf -noreset &'
+
+# Set DISPLAY before running IsaacSim
+export DISPLAY=:99
+```
+
+### 2. Conda environment X11 library conflicts
+
+If your conda environment has its own `libxcb`/`libX11` (e.g. from `libvulkan-loader`), they may conflict with the NVIDIA Xorg server and cause `[xcb] Aborting` segfaults. Fix by disabling the conda versions:
+
+```bash
+cd $CONDA_PREFIX/lib
+for f in libxcb*.so* libX11*.so* libXext*.so*; do
+  [ -f "$f" ] && mv "$f" "${f}.disabled"
+done
+```
+
+### 3. IsaacLab `controllers.mpx` conflict
+
+IsaacLab >= 0.40 includes a `controllers.mpx` module that imports `readchar`/`readline`, which triggers xcb crashes during IsaacSim extension loading. Comment it out:
+
+```python
+# In IsaacLab/source/isaaclab/isaaclab/controllers/__init__.py
+# from . import mpx  # disabled: readchar conflicts with X11 xcb
+```
+
+### 4. scipy version
+
+IsaacSim 4.5 bundles an older scipy internally. If your conda scipy is too new, downgrade:
+
+```bash
+pip install scipy==1.10.1
+```
+
+### 5. NVIDIA driver version matching
+
+Ensure the kernel module and userspace libraries are the same version. Check with:
+```bash
+cat /proc/driver/nvidia/version  # kernel module version
+strings /usr/lib/x86_64-linux-gnu/libGLX_nvidia.so.0 | grep '^570\.'  # userspace version
+```
+If they differ (e.g. `.run` installer kernel vs `apt` userspace), the Vulkan ICD will fail with `ERROR_INCOMPATIBLE_DRIVER`.
+
+### 6. Running evaluation
+
+```bash
+export DISPLAY=:99
+source scripts/source_isaacsim_setup.sh  # or source_conda_env.sh
+export OMNI_KIT_ACCEPT_EULA=1
+
+python -u src/holosoma/holosoma/eval_agent.py \
+  --checkpoint <path_to_checkpoint>/model_XXXX.pt \
+  --training.headless=True \
+  --training.num-envs=1 \
+  --training.max-eval-steps=500
+```
+
 ## Issue Reporting
 
 We welcome feedback and issue reports to help improve holosoma. Please use issues to:

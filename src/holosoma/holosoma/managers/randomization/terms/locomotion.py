@@ -64,19 +64,24 @@ def _isaacsim_randomize_rigid_body_mass(
         from isaaclab.managers import EventTermCfg
     except ImportError as exc:  # pragma: no cover - defensive
         raise RuntimeError("IsaacSim mass randomization requires isaaclab.") from exc
-    func = mdp.randomize_rigid_body_mass(
-        EventTermCfg(
-            func=mdp.randomize_rigid_body_mass,
-            mode="startup",
-            params={
-                "env_ids": env_ids_cpu,
-                "asset_cfg": asset_cfg,
-                "mass_distribution_params": mass_distribution_params,
-                "operation": operation,
-            },
-        ),
-        env=simulator,
-    )
+    try:
+        func = mdp.randomize_rigid_body_mass(
+            EventTermCfg(
+                func=mdp.randomize_rigid_body_mass,
+                mode="startup",
+                params={
+                    "env_ids": env_ids_cpu,
+                    "asset_cfg": asset_cfg,
+                    "mass_distribution_params": mass_distribution_params,
+                    "operation": operation,
+                },
+            ),
+            env=simulator,
+        )
+    except TypeError:
+        import logging
+        logging.warning("Skipping rigid body mass randomization due to IsaacLab API incompatibility")
+        return
     func(
         simulator,
         env_ids_cpu,
