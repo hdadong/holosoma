@@ -1003,6 +1003,12 @@ class FastSACAgent(BaseAlgo):
         self.env.set_is_evaluating()
         obs = self.env.reset()
 
+        total_reward = 0.0
+        episode_reward = 0.0
+        episode_steps = 0
+        num_episodes = 0
+        step = 0
+
         for _ in itertools.islice(itertools.count(), max_eval_steps):
             if self.obs_normalization:
                 normalized_obs = self.obs_normalizer(obs, update=False)
@@ -1010,4 +1016,36 @@ class FastSACAgent(BaseAlgo):
                 normalized_obs = obs
             # Actions are already scaled by the actor
             actions = self.actor(normalized_obs)[0]
-            obs, _, _, _ = self.env.step(actions)
+            obs, reward, done, info = self.env.step(actions)
+
+            reward_scalar = reward.sum().item() if hasattr(reward, 'sum') else float(reward)
+            episode_reward += reward_scalar
+            episode_steps += 1
+            step += 1
+
+            if step % 50 == 0:
+                logger.info(f"[eval] step={step} episode_reward={episode_reward:.3f} episode_steps={episode_steps}")
+
+            # Check if any env is done
+            done_any = done.any().item() if hasattr(done, 'any') else bool(done)
+            if done_any:
+                num_episodes += 1
+                total_reward += episode_reward
+                avg_reward = total_reward / num_episodes
+                logger.info(
+                    f"[eval] Episode {num_episodes} finished: "
+                    f"reward={episode_reward:.3f} steps={episode_steps} "
+                    f"avg_reward={avg_reward:.3f}"
+                )
+                episode_reward = 0.0
+                episode_steps = 0
+
+        # Final summary
+        if num_episodes > 0:
+            logger.info(
+                f"[eval] Summary: {num_episodes} episodes, "
+                f"avg_reward={total_reward / num_episodes:.3f}, "
+                f"total_steps={step}"
+            )
+        else:
+            logger.info(f"[eval] Summary: {step} steps, accumulated_reward={episode_reward:.3f} (no episode completed)")
