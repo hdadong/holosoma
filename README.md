@@ -209,6 +209,36 @@ python -u src/holosoma/holosoma/eval_agent.py \
   --training.max-eval-steps=500
 ```
 
+### 7. Collecting box-carrying data with a converted JAX policy (no JAX needed)
+
+First, convert the JAX policy to PyTorch (requires a JAX-capable env, e.g. `lift4`):
+
+```bash
+JAX_PLATFORMS=cpu PYTHONPATH=.:mujoco_playground:brax_env \
+  python scripts/convert_jax_policy_to_pytorch.py \
+  --jax_policy logs/<experiment>/policies/policy<step>.pkl \
+  --output logs/<experiment>/policies/policy_pytorch.pt \
+  --verify
+```
+
+Then collect data in IsaacSim using the converted PyTorch policy (no JAX dependencies):
+
+```bash
+export DISPLAY=:99
+export OMNI_KIT_ACCEPT_EULA=1
+ISAACSIM=/isaacsim/isaacsim-4.5
+export CARB_APP_PATH=${ISAACSIM}/kit
+export ISAAC_PATH=${ISAACSIM}
+export EXP_PATH=${ISAACSIM}/apps
+
+CUDA_VISIBLE_DEVICES=0 \
+PYTHONPATH="<LIFT3_ROOT>:${ISAACSIM}/python_packages:${ISAACSIM}/exts/isaacsim.simulation_app:${ISAACSIM}/extsDeprecated/omni.isaac.kit:${ISAACSIM}/kit/kernel/py:${ISAACSIM}/kit/plugins/bindings-python" \
+python -u scripts/eval_pytorch_policy_in_isaacsim_box.py \
+  --policy_path logs/<experiment>/policies/policy_pytorch.pt \
+  --motion_file tracking_motion/<motion>.npz \
+  --gpu 0 --max_steps 240 --num_envs 1 --headless
+```
+
 ## Issue Reporting
 
 We welcome feedback and issue reports to help improve holosoma. Please use issues to:
