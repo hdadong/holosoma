@@ -126,6 +126,56 @@ def object_global_ref_orientation_error_exp(env: WholeBodyTrackingManager, sigma
 
 
 # ================================================================================================
+# Binary Contact Rewards
+# ================================================================================================
+
+
+class BinaryContactReward(RewardTermBase):
+    """Reward for matching reference binary contact mask using simulator contact forces.
+
+    Compares actual contact forces from the simulator against the reference contact
+    mask from motion data. Returns the recall: matched_contacts / reference_contacts.
+    When no reference contacts are active, returns 0.
+    """
+
+    def __init__(self, cfg: RewardTermCfg, env: WholeBodyTrackingManager):
+        super().__init__(cfg, env)
+        self.env = env
+        self.force_threshold = cfg.params.get("force_threshold", 10.0)
+
+    def __call__(self, env: WholeBodyTrackingManager, **kwargs) -> torch.Tensor:
+        motion_command = _get_motion_command_and_assert_type(env)
+
+        if not motion_command.motion.has_contact_mask:
+            return torch.zeros(env.num_envs, device=env.device)
+
+        # Reference contact mask: (num_envs, num_contact_points)
+        ref_contact = motion_command.reference_contact_mask
+
+        # Get actual contact forces from simulator: (num_envs, num_bodies, 3)
+        contact_forces = self.env.simulator.contact_forces
+
+        # Map contact mask indices to simulator body indices
+        body_indices = motion_command.contact_body_indices_in_simulator  # (num_contact_points,)
+
+        # Get contact force norms for the relevant bodies: (num_envs, num_contact_points)
+        contact_force_norms = torch.norm(contact_forces[:, body_indices], dim=-1)
+
+        # Binarize actual contacts using force threshold
+        actual_contact = (contact_force_norms > self.force_threshold).float()
+
+        # Compute recall: matched / reference_count
+        ref_count = ref_contact.sum(dim=-1)  # (num_envs,)
+        matched = (actual_contact * ref_contact).sum(dim=-1)  # (num_envs,)
+        reward = torch.where(ref_count > 0, matched / ref_count.clamp(min=1.0), torch.zeros_like(ref_count))
+
+        return reward
+
+    def reset(self, env_ids: torch.Tensor | None = None) -> None:
+        pass
+
+
+# ================================================================================================
 # Undesired Contacts Rewards
 # ================================================================================================
 

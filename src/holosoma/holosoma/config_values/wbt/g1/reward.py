@@ -110,4 +110,24 @@ g1_29dof_wbt_reward_w_object = RewardManagerCfg(
     }
 )
 
-__all__ = ["g1_29dof_wbt_fast_sac_reward", "g1_29dof_wbt_reward", "g1_29dof_wbt_reward_w_object"]
+# Binary contact reward: replaces object tracking rewards with contact-based reward.
+# Uses FastSAC robot tracking weights as base, adds binary contact reward instead of
+# object position/orientation tracking.
+g1_29dof_wbt_fast_sac_reward_binary_contact = RewardManagerCfg(
+    terms={
+        **g1_29dof_wbt_fast_sac_reward.terms,
+        # Binary contact reward replaces object_global_ref_position/orientation_error_exp
+        "binary_contact": RewardTermCfg(
+            func="holosoma.managers.reward.terms.wbt:BinaryContactReward",
+            params={"force_threshold": 10.0},
+            weight=3.0,
+        ),
+    }
+)
+
+__all__ = [
+    "g1_29dof_wbt_fast_sac_reward",
+    "g1_29dof_wbt_fast_sac_reward_binary_contact",
+    "g1_29dof_wbt_reward",
+    "g1_29dof_wbt_reward_w_object",
+]

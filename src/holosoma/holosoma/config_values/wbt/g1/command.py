@@ -76,7 +76,26 @@ g1_29dof_wbt_command_w_object = replace(
     },
 )
 
+# Motion config with contact mask for binary contact reward training
+motion_config_w_object_contact = replace(
+    motion_config,
+    motion_file="holosoma/data/motions/g1_29dof/whole_body_tracking/sub3_largebox_003_mj_w_obj_contact.npz",
+)
+
+g1_29dof_wbt_command_w_object_contact = replace(
+    g1_29dof_wbt_command,
+    setup_terms={
+        "motion_command": CommandTermCfg(
+            func="holosoma.managers.command.terms.wbt:MotionCommand",
+            params={
+                "motion_config": motion_config_w_object_contact,
+            },
+        )
+    },
+)
+
 __all__ = [
     "g1_29dof_wbt_command",
     "g1_29dof_wbt_command_w_object",
+    "g1_29dof_wbt_command_w_object_contact",
 ]

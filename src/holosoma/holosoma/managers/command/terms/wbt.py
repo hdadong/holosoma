@@ -92,6 +92,21 @@ class MotionLoader:
                 self._object_pos_w = torch.zeros(0, 3, device=device)
                 self._object_quat_w = torch.zeros(0, 4, device=device)
                 self._object_lin_vel_w = torch.zeros(0, 3, device=device)
+
+            # Load binary contact mask if available
+            self.has_contact_mask = "contact_mask" in data
+            if self.has_contact_mask:
+                self._contact_mask = torch.tensor(
+                    data["contact_mask"], dtype=torch.float32, device=device
+                )  # (T, num_contact_points)
+                self._contact_link_names = data["contact_link_names"].tolist()
+                self._contact_body_labels = data["contact_body_labels"].tolist()
+            else:
+                self._contact_mask = torch.zeros(
+                    self._joint_pos.shape[0], 0, dtype=torch.float32, device=device
+                )
+                self._contact_link_names = []
+                self._contact_body_labels = []
         return body_names, joint_names
 
     @property
@@ -129,6 +144,10 @@ class MotionLoader:
     @property
     def object_lin_vel_w(self) -> torch.Tensor:
         return self._object_lin_vel_w[:]
+
+    @property
+    def contact_mask(self) -> torch.Tensor:
+        return self._contact_mask[:]
 
     def extend_with_segments(self, segments: dict[str, torch.Tensor], prepend: bool) -> MotionLoader:
         """Merge interpolated segments with motion data, mutating this MotionLoader."""
@@ -318,6 +337,24 @@ class MotionCommand(CommandTermBase):
 
             assert self._env.simulator.get_simulator_type() == SimulatorType.ISAACSIM, (
                 "Object is only supported in IsaacSim"
+            )
+
+        # 3b. build contact body index mapping if contact mask is available
+        if self.motion.has_contact_mask:
+            contact_link_names = self.motion._contact_link_names
+            # Map each contact link name to its index in the simulator body list.
+            # Some contact points share the same link (e.g. torso_link appears 4 times),
+            # so we store per-contact-point indices.
+            self.contact_body_indices_in_simulator = []
+            for link_name in contact_link_names:
+                alias_name = FAKE_BODY_NAME_ALIASES.get(link_name, link_name)
+                if alias_name in robot_body_names:
+                    self.contact_body_indices_in_simulator.append(robot_body_names.index(alias_name))
+                else:
+                    logger.warning(f"Contact link '{link_name}' not found in robot body names, using -1")
+                    self.contact_body_indices_in_simulator.append(-1)
+            self.contact_body_indices_in_simulator = torch.tensor(
+                self.contact_body_indices_in_simulator, dtype=torch.long, device=self.device
             )
 
         # 4. get the adaptive timesteps sampler
@@ -688,6 +725,14 @@ class MotionCommand(CommandTermBase):
     @property
     def simulator_object_lin_vel_w(self) -> torch.Tensor:
         return self._env.simulator.all_root_states[self.object_indices_in_simulator][:, 7:10]
+
+    #########################################################################################
+    ## Contact mask from motion data
+    #########################################################################################
+    @property
+    def reference_contact_mask(self) -> torch.Tensor:
+        """Binary contact mask from reference motion for current timesteps. Shape: (num_envs, num_contact_points)."""
+        return self.motion.contact_mask[self.time_steps]
 
     #########################################################################################
     ## Methods that does not fit into setup/step/reset pattern

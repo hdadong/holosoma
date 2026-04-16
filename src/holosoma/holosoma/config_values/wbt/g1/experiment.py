@@ -179,9 +179,33 @@ g1_29dof_wbt_fast_sac_w_object = replace(
     ),
 )
 
+# FastSAC with binary contact reward: uses robot body tracking + binary contact mask
+# instead of object position/orientation tracking.
+g1_29dof_wbt_fast_sac_binary_contact = replace(
+    g1_29dof_wbt_fast_sac,
+    command=command.g1_29dof_wbt_command_w_object_contact,
+    robot=replace(
+        robot.g1_29dof_w_object,
+        asset=replace(robot.g1_29dof_w_object.asset, enable_self_collisions=True),
+        object=replace(
+            robot.g1_29dof_w_object.object,
+            object_urdf_path="holosoma/data/motions/g1_29dof/whole_body_tracking/objects_largebox.urdf",
+        ),
+        init_state=replace(robot.g1_29dof_w_object.init_state, pos=[0.0, 0.0, 0.76]),
+    ),
+    randomization=randomization.g1_29dof_wbt_randomization_w_object,
+    observation=observation.g1_29dof_wbt_observation_w_object,
+    reward=reward.g1_29dof_wbt_fast_sac_reward_binary_contact,
+    simulator=replace(
+        simulator.isaacsim,
+        config=replace(simulator.isaacsim.config, scene=replace(simulator.isaacsim.config.scene, env_spacing=0.0)),
+    ),
+)
+
 __all__ = [
     "g1_29dof_wbt",
     "g1_29dof_wbt_fast_sac",
+    "g1_29dof_wbt_fast_sac_binary_contact",
     "g1_29dof_wbt_fast_sac_w_object",
     "g1_29dof_wbt_w_object",
 ]
