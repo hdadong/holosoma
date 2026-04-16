@@ -186,7 +186,11 @@ g1_29dof_wbt_fast_sac_binary_contact = replace(
     command=command.g1_29dof_wbt_command_w_object_contact,
     robot=replace(
         robot.g1_29dof_w_object,
-        asset=replace(robot.g1_29dof_w_object.asset, enable_self_collisions=True),
+        asset=replace(
+            robot.g1_29dof_w_object.asset,
+            enable_self_collisions=True,
+            collapse_fixed_joints=False,
+        ),
         object=replace(
             robot.g1_29dof_w_object.object,
             object_urdf_path="holosoma/data/motions/g1_29dof/whole_body_tracking/objects_largebox.urdf",
