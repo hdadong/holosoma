@@ -1,0 +1,94 @@
+# syntax=docker/dockerfile:1.4
+# Minimal image for Whole-Body-Tracking (WBT) training with IsaacSim only.
+# The repo ships pre-retargeted motion files (e.g. sub3_largebox_003_mj_w_obj.npz) in
+# src/holosoma/holosoma/data/motions/, so the retargeting env is not needed for training.
+# Skips IsaacGym / MuJoCo / inference / retargeting environments to reduce build time and image size.
+# Base has Ubuntu 22.04 + glibc 2.35, so this works on hosts with older glibc (e.g. Ubuntu 20.04).
+FROM nvcr.io/nvidia/isaac-sim:5.1.0
+
+USER root
+
+ENV LANG=C.UTF-8
+ENV DEBIAN_FRONTEND=noninteractive
+ENV WORKSPACE_DIR=/workspace
+ENV CONDA_ROOT=/root/.holosoma_deps/miniconda3
+ENV PATH=$CONDA_ROOT/bin:$PATH
+ENV OMNI_KIT_ACCEPT_EULA=1
+
+RUN mkdir -p /var/lib/apt/lists/partial && \
+    apt-get update && apt-get install -y --no-install-recommends \
+    cmake \
+    build-essential \
+    swig \
+    curl \
+    wget \
+    unzip \
+    git \
+    sudo \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o /miniconda.sh && \
+    bash /miniconda.sh -b -u -p $CONDA_ROOT && \
+    rm /miniconda.sh
+
+RUN echo ". $CONDA_ROOT/etc/profile.d/conda.sh" >> ~/.bashrc && \
+    conda config --set always_yes true
+
+RUN mkdir -p $WORKSPACE_DIR
+WORKDIR $WORKSPACE_DIR
+
+# Git config to avoid HTTP/2 stream cancellations on large clones (IsaacLab).
+RUN git config --global http.version HTTP/1.1 && \
+    git config --global http.postBuffer 524288000 && \
+    git config --global http.lowSpeedLimit 1000 && \
+    git config --global http.lowSpeedTime 60
+
+COPY . ./holosoma
+
+# Pre-clone IsaacLab with retry (resilient to transient GitHub HTTP/2 disconnects).
+# setup_isaacsim.sh will see the directory already exists and skip its own clone step.
+RUN mkdir -p /root/.holosoma_deps && \
+    for i in 1 2 3 4 5; do \
+      git clone --depth 1 --branch v2.3.0 \
+          https://github.com/isaac-sim/IsaacLab.git \
+          /root/.holosoma_deps/IsaacLab && break; \
+      echo "git clone attempt $i failed, retrying..." && \
+      rm -rf /root/.holosoma_deps/IsaacLab && sleep 5; \
+    done && test -d /root/.holosoma_deps/IsaacLab
+
+# Pin setuptools<81 in PEP-517 build isolation environments. setuptools 81 removed
+# the built-in `pkg_resources`, which breaks legacy dependencies like `flatdict`
+# (pulled in by isaaclab_rl) that still import it inside their setup.py.
+RUN printf 'setuptools<81\n' > /tmp/pip_constraints.txt
+ENV PIP_CONSTRAINT=/tmp/pip_constraints.txt
+
+# Run only the isaacsim setup (skip isaacgym / mujoco / inference / retargeting).
+# sudo is a no-op in the build environment (we're already root).
+RUN <<EOF
+#!/bin/bash
+set -e
+function sudo() { "$@"; }
+export -f sudo
+source $CONDA_ROOT/etc/profile.d/conda.sh
+cd /workspace/holosoma/scripts
+chmod +x setup_isaacsim.sh
+./setup_isaacsim.sh
+EOF
+
+RUN echo "source $CONDA_ROOT/etc/profile.d/conda.sh" >> ~/.bashrc
+
+# Sanity-check the install. `isaaclab.sh --install` silently continues when sub-
+# packages fail, so verify that every core module imports and fail the build
+# early otherwise.
+RUN <<EOF
+#!/bin/bash
+set -e
+source $CONDA_ROOT/etc/profile.d/conda.sh
+conda activate hssim
+python -c "import torch, isaacsim, isaaclab, holosoma; print('import check ok:', torch.__version__)"
+EOF
+
+WORKDIR /workspace/holosoma
+
+ENTRYPOINT []
+CMD ["/bin/bash"]

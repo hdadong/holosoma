@@ -51,6 +51,116 @@ bash scripts/setup_inference.sh
 bash scripts/setup_retargeting.sh
 ```
 
+### Docker Setup (recommended for hosts without Ubuntu 22.04+)
+
+If the host does not satisfy IsaacSim's native requirements (e.g. Ubuntu 20.04 /
+glibc 2.31), use Docker. The container base is
+[`nvcr.io/nvidia/isaac-sim:5.1.0`](docker/Dockerfile) (Ubuntu 22.04, glibc 2.35), so
+the host only needs an NVIDIA driver compatible with CUDA 12.8 and
+`nvidia-container-toolkit`. GPU compute goes through the NVIDIA runtime with
+essentially no overhead compared to a native install.
+
+Prerequisites on the host:
+- Docker with BuildKit (v20.10+)
+- `nvidia-container-toolkit` (verify with `docker info | grep -i nvidia`)
+- NVIDIA driver ≥ 525 (560+ recommended for Blackwell)
+
+Two Dockerfiles are provided:
+
+| Dockerfile | Installs | Use case |
+|---|---|---|
+| [`docker/Dockerfile`](docker/Dockerfile) | IsaacSim + IsaacGym + MJWarp + inference + retargeting | Full stack, all simulators |
+| [`docker/Dockerfile.wbt`](docker/Dockerfile.wbt) | IsaacSim only | WBT training (e.g. box-carrying) — fastest build, smallest image |
+
+#### Build the WBT (IsaacSim-only) image
+
+```bash
+# From the repository root.
+# BuildKit is required (heredoc syntax).
+DOCKER_BUILDKIT=1 docker build -t holosoma:wbt -f docker/Dockerfile.wbt .
+```
+
+Full image build (all environments, using `docker/build.sh`):
+
+```bash
+ECR_REPO=local bash docker/build.sh
+```
+
+#### Run WBT FastSAC training (box-carrying example)
+
+The repo already ships the pre-retargeted motion file
+`sub3_largebox_003_mj_w_obj.npz` in
+[`src/holosoma/holosoma/data/motions/g1_29dof/whole_body_tracking/`](src/holosoma/holosoma/data/motions/g1_29dof/whole_body_tracking/),
+so retargeting is **not** required for this task — training can start
+immediately.
+
+Run on specific GPUs (e.g. 4–7) with the repo and logs bind-mounted for
+persistence:
+
+```bash
+# Create a host directory for logs/checkpoints so they survive container removal.
+mkdir -p ~/holosoma_logs
+
+docker run --rm -d \
+    --name holosoma-wbt-boxcarry \
+    --runtime=nvidia \
+    --gpus '"device=4,5,6,7"' \
+    --shm-size=16g \
+    -e OMNI_KIT_ACCEPT_EULA=1 \
+    -v "$(pwd)":/workspace/holosoma \
+    -v ~/holosoma_logs:/workspace/holosoma/logs \
+    -v ~/.netrc:/root/.netrc:ro \
+    holosoma:wbt \
+    bash -c '
+      source /root/.holosoma_deps/miniconda3/etc/profile.d/conda.sh &&
+      conda activate hssim &&
+      cd /workspace/holosoma &&
+      python src/holosoma/holosoma/train_agent.py \
+          exp:g1-29dof-wbt-fast-sac-w-object \
+          logger:wandb-offline \
+          --logger.video.enabled=False \
+          --training.num-envs=2048 \
+          2>&1 | tee logs/boxcarry_train.log
+    '
+
+# Follow training progress:
+docker logs -f holosoma-wbt-boxcarry
+# or
+tail -f ~/holosoma_logs/boxcarry_train.log
+```
+
+Flag notes:
+- `--gpus '"device=4,5,6,7"'` — pin the container to specific GPUs. Use
+  `--gpus all` to expose every GPU, or `--gpus '"device=4"'` for a single GPU.
+- `--shm-size=16g` — IsaacSim / data loaders put tensors in `/dev/shm`; the
+  default 64 MB is too small.
+- `--training.num-envs=2048` — the `g1_29dof_wbt_fast_sac_w_object` preset
+  defaults to `num_envs=8192`, which OOMs on a single 24 GB GPU (RTX 4090).
+  Drop it to `2048` for 24 GB cards; scale up proportionally for larger GPUs
+  or when using multi-GPU training.
+- `-v ~/.netrc:/root/.netrc:ro` — mount host Wandb credentials into the
+  container. Omit this (and pass `logger:disabled` instead of
+  `logger:wandb`) if you do not use Wandb.
+- `logger:wandb-offline` — run Wandb in offline mode (avoid network calls to
+  `api.wandb.ai` during training). Sync later with `wandb sync`. Swap to
+  `logger:wandb` for online logging, or `logger:disabled` to turn Wandb off
+  entirely (TensorBoard still runs).
+- `--logger.video.enabled=False` — disable rendering on headless hosts.
+  Remove this flag if a display / xvfb is available.
+
+#### Interactive shell
+
+```bash
+docker run --rm -it \
+    --runtime=nvidia --gpus all --shm-size=16g \
+    -e OMNI_KIT_ACCEPT_EULA=1 \
+    -v "$(pwd)":/workspace/holosoma \
+    holosoma:wbt bash
+# inside container:
+#   conda activate hssim
+#   python src/holosoma/holosoma/train_agent.py --help
+```
+
 ### Training
 
 Train a G1 robot with FastSAC on IsaacGym:
