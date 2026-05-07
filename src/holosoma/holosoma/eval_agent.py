@@ -31,13 +31,27 @@ def run_eval_with_tyro(
     saved_config: ExperimentConfig,
     saved_wandb_path: str | None,
 ):
-    # When --save_fpv is enabled, we attach a head-mounted camera to the IsaacSim
-    # robot articulation and capture RGB via omni.replicator. That requires the
-    # AppLauncher to be started with --enable_cameras, so inject the flag if the
-    # caller didn't already pass it.
-    if checkpoint_cfg.save_fpv and "--enable_cameras" not in sys.argv:
-        sys.argv.append("--enable_cameras")
-        logger.info("[eval] save_fpv=True → injected --enable_cameras for IsaacSim AppLauncher")
+    # When --save_fpv is enabled, we attach a head-mounted IsaacLab TiledCamera
+    # to the robot articulation and capture RGB via scene.sensors["fpv_camera"].
+    # That requires:
+    #   1. AppLauncher to start with --enable_cameras.
+    #   2. IsaacSim._setup_scene to register the TiledCamera before
+    #      scene.clone_environments — gated by HOLOSOMA_FPV_ENABLE=1.
+    if checkpoint_cfg.save_fpv:
+        if "--enable_cameras" not in sys.argv:
+            sys.argv.append("--enable_cameras")
+            logger.info(
+                "[eval] save_fpv=True → injected --enable_cameras for IsaacSim AppLauncher"
+            )
+        os.environ["HOLOSOMA_FPV_ENABLE"] = "1"
+        os.environ["HOLOSOMA_FPV_WIDTH"] = str(checkpoint_cfg.fpv_width)
+        os.environ["HOLOSOMA_FPV_HEIGHT"] = str(checkpoint_cfg.fpv_height)
+        os.environ["HOLOSOMA_FPV_VFOV_DEG"] = str(checkpoint_cfg.fpv_fov)
+        logger.info(
+            "[eval] HOLOSOMA_FPV_ENABLE=1 "
+            f"(W={checkpoint_cfg.fpv_width} H={checkpoint_cfg.fpv_height} "
+            f"vfov={checkpoint_cfg.fpv_fov})"
+        )
 
     # Use shared simulation environment setup
     env, device, simulation_app = setup_simulation_environment(tyro_config)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import builtins
 import copy
 import dataclasses
+import math
 import os
 import xml.etree.ElementTree as ET
 from typing import Any
@@ -23,6 +24,7 @@ from isaaclab.managers import EventManager, SceneEntityCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
 from isaaclab.sensors import ContactSensor, ContactSensorCfg, RayCaster, RayCasterCfg, patterns
+from isaaclab.sensors import TiledCamera, TiledCameraCfg
 from isaaclab.sim import PhysxCfg, SimulationCfg, SimulationContext
 from isaaclab.terrains import TerrainGeneratorCfg, TerrainImporterCfg
 from isaaclab.terrains.utils import create_prim_from_mesh
@@ -386,6 +388,12 @@ class IsaacSim(BaseSimulator):
             self._height_scanner = RayCaster(height_scanner_config)
             self.scene.sensors["height_scanner"] = self._height_scanner
 
+        # Optional FPV (head-mounted) TiledCamera. Enabled by env var so we
+        # don't have to thread a config field through every checkpoint /
+        # serialized config. Driven by holosoma.simulator.isaacsim.fpv_camera.
+        if os.environ.get("HOLOSOMA_FPV_ENABLE") == "1":
+            self._setup_fpv_tiled_camera()
+
         # clone, filter, and replicate
         self.scene.clone_environments(copy_from_source=False)
 
@@ -441,6 +449,74 @@ class IsaacSim(BaseSimulator):
             color=(0.98, 0.95, 0.88),
         )
         light_config1.func("/World/DomeLight", light_config1, translation=(1, 0, 10))
+
+    def _setup_fpv_tiled_camera(self) -> None:
+        """Register a head-mounted ``TiledCamera`` to ``scene.sensors``.
+
+        Driven by environment variables so we don't have to extend the
+        serialized config schema:
+
+        ``HOLOSOMA_FPV_ENABLE``      — must be "1" for setup to run.
+        ``HOLOSOMA_FPV_HEAD_LINK``   — body name to attach to (default ``head_link``).
+        ``HOLOSOMA_FPV_WIDTH/HEIGHT``— image size in px (default 640x480).
+        ``HOLOSOMA_FPV_VFOV_DEG``    — vertical FOV in deg (default 60).
+        ``HOLOSOMA_FPV_OFFSET_XYZ``  — comma-separated meters in head_link's
+                                       ROS frame (+x forward, +y left, +z up).
+                                       Default ``0.15,0.0,0.10``.
+
+        Must be called BEFORE ``scene.clone_environments`` so the camera
+        prim_path glob ``env_.*`` is replicated to every env.
+        """
+        head_body = os.environ.get("HOLOSOMA_FPV_HEAD_LINK", "head_link")
+        width = int(os.environ.get("HOLOSOMA_FPV_WIDTH", "640"))
+        height = int(os.environ.get("HOLOSOMA_FPV_HEIGHT", "480"))
+        vfov_deg = float(os.environ.get("HOLOSOMA_FPV_VFOV_DEG", "60"))
+        offset_str = os.environ.get("HOLOSOMA_FPV_OFFSET_XYZ", "0.15,0.0,0.10")
+        try:
+            offset_xyz = tuple(float(x) for x in offset_str.split(","))
+            assert len(offset_xyz) == 3
+        except Exception:
+            logger.warning(f"[fpv] Bad HOLOSOMA_FPV_OFFSET_XYZ={offset_str!r}; using default.")
+            offset_xyz = (0.15, 0.0, 0.10)
+
+        # Compute focal length to match requested vertical FOV with a
+        # standard 35 mm equivalent vertical aperture of 24 mm.
+        vertical_aperture_mm = 24.0
+        aspect_ratio = width / max(1, height)
+        horizontal_aperture_mm = vertical_aperture_mm * aspect_ratio
+        focal_length_mm = vertical_aperture_mm / (2.0 * math.tan(math.radians(vfov_deg) / 2.0))
+
+        # IsaacLab OffsetCfg conventions (forward axis):
+        #   "opengl" → -Z   (USD/OpenGL camera default)
+        #   "ros"    → +Z   (ROS image_pipeline / OpenCV image plane)
+        #   "world"  → +X   (ROS robot-link convention: +X forward, +Y left, +Z up)
+        # head_link uses the robot-link frame, so "world" + identity rotation
+        # makes the optical axis point along head_link's +X (forward).
+        cfg = TiledCameraCfg(
+            prim_path=f"/World/envs/env_.*/Robot/{head_body}/FPVCamera",
+            offset=TiledCameraCfg.OffsetCfg(
+                pos=offset_xyz,
+                rot=(1.0, 0.0, 0.0, 0.0),
+                convention="world",
+            ),
+            spawn=sim_utils.PinholeCameraCfg(
+                focal_length=focal_length_mm,
+                focus_distance=400.0,
+                horizontal_aperture=horizontal_aperture_mm,
+                vertical_aperture=vertical_aperture_mm,
+                clipping_range=(0.05, 1000.0),
+            ),
+            data_types=["rgb"],
+            width=width,
+            height=height,
+            update_period=0.0,
+        )
+        self.fpv_camera = TiledCamera(cfg)
+        self.scene.sensors["fpv_camera"] = self.fpv_camera
+        logger.info(
+            f"[fpv] Registered TiledCamera under env_*/Robot/{head_body}/FPVCamera "
+            f"(W={width} H={height} vfov={vfov_deg}deg offset={offset_xyz}, convention=world)"
+        )
 
     def _get_base_body_name(self, preference_order: list[str]) -> str:
         """Get the base body name with fallback logic.
