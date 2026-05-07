@@ -71,6 +71,8 @@ class CheckpointConfig:
     """FPV image height in pixels."""
     fpv_fov: float = 60.0
     """FPV vertical field of view in degrees."""
+    max_eval_steps: int | None = None
+    """Optional override for training.max_eval_steps when running eval."""
 
 
 def load_saved_experiment_config(checkpoint_cfg: CheckpointConfig) -> tuple[ExperimentConfig, str | None]:

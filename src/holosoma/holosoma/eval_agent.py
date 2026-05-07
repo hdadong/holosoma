@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import dataclasses
 import os
+import sys
 
 import tyro
 from loguru import logger
@@ -29,9 +31,13 @@ def run_eval_with_tyro(
     saved_config: ExperimentConfig,
     saved_wandb_path: str | None,
 ):
-    # Note: FPV camera setup is handled inside evaluate_policy.
-    # We do NOT enable headless_recording here because the rendering kit
-    # triggers GLXBadFBConfig on headless servers without proper GLX support.
+    # When --save_fpv is enabled, we attach a head-mounted camera to the IsaacSim
+    # robot articulation and capture RGB via omni.replicator. That requires the
+    # AppLauncher to be started with --enable_cameras, so inject the flag if the
+    # caller didn't already pass it.
+    if checkpoint_cfg.save_fpv and "--enable_cameras" not in sys.argv:
+        sys.argv.append("--enable_cameras")
+        logger.info("[eval] save_fpv=True → injected --enable_cameras for IsaacSim AppLauncher")
 
     # Use shared simulation environment setup
     env, device, simulation_app = setup_simulation_environment(tyro_config)
@@ -92,15 +98,42 @@ def run_eval_with_tyro(
 def main() -> None:
     init_eval_logging()
     checkpoint_cfg, remaining_args = tyro.cli(CheckpointConfig, return_unknown_args=True, add_help=False)
+    logger.info(f"[eval] checkpoint_cfg = {checkpoint_cfg}")
+    logger.info(f"[eval] remaining_args = {remaining_args}")
     saved_cfg, saved_wandb_path = load_saved_experiment_config(checkpoint_cfg)
     eval_cfg = saved_cfg.get_eval_config()
-    overwritten_tyro_config = tyro.cli(
-        ExperimentConfig,
-        default=eval_cfg,
-        args=remaining_args,
-        description="Overriding config on top of what's loaded.",
-        config=TYRO_CONIFG,
-    )
+
+    # When FPV capture is enabled we always want a headless single-env rollout in
+    # the docker container — but the second tyro.cli below cannot build a parser
+    # for the `list[SceneFileConfig]` field if we try to pass these as CLI flags
+    # (tyro 1.0.13 limitation). So apply the overrides in-memory here and skip
+    # the second tyro.cli call entirely when no extra overrides are present.
+    if checkpoint_cfg.save_fpv:
+        eval_cfg = dataclasses.replace(
+            eval_cfg,
+            training=dataclasses.replace(
+                eval_cfg.training,
+                headless=True,
+                num_envs=1,
+                max_eval_steps=checkpoint_cfg.max_eval_steps or eval_cfg.training.max_eval_steps,
+            ),
+        )
+        logger.info(
+            "[eval] save_fpv=True → forcing training.headless=True, num_envs=1, "
+            f"max_eval_steps={eval_cfg.training.max_eval_steps}"
+        )
+
+    if remaining_args:
+        overwritten_tyro_config = tyro.cli(
+            ExperimentConfig,
+            default=eval_cfg,
+            args=remaining_args,
+            description="Overriding config on top of what's loaded.",
+            config=TYRO_CONIFG,
+        )
+    else:
+        overwritten_tyro_config = eval_cfg
+        logger.info("[eval] No extra CLI overrides; using loaded eval config as-is.")
     print("overwritten_tyro_config: ", overwritten_tyro_config)
     run_eval_with_tyro(overwritten_tyro_config, checkpoint_cfg, saved_cfg, saved_wandb_path)
 

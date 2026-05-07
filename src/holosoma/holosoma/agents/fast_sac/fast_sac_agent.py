@@ -1009,6 +1009,17 @@ class FastSACAgent(BaseAlgo):
         fpv_fov: float = 60.0,
     ):
         self.env.set_is_evaluating()
+
+        # Set up the IsaacSim head-mounted FPV recorder before reset, so the camera
+        # exists for the very first frame.
+        fpv_recorder = None
+        stop_fpv_after_first_episode = False
+        if save_fpv:
+            fpv_recorder = self._maybe_setup_isaacsim_fpv_recorder(
+                fpv_width, fpv_height, fpv_fov,
+            )
+            stop_fpv_after_first_episode = fpv_recorder is not None
+
         obs = self.env.reset()
 
         total_reward = 0.0
@@ -1016,8 +1027,6 @@ class FastSACAgent(BaseAlgo):
         episode_steps = 0
         num_episodes = 0
         step = 0
-        # Record joint states for offline FPV rendering
-        recorded_qpos: list = []
 
         for _ in itertools.islice(itertools.count(), max_eval_steps):
             if self.obs_normalization:
@@ -1027,29 +1036,12 @@ class FastSACAgent(BaseAlgo):
             actions = self.actor(normalized_obs)[0]
             obs, reward, done, info = self.env.step(actions)
 
-            # Record robot + object state for offline rendering
-            if save_fpv:
+            if fpv_recorder is not None:
                 try:
-                    sim = self.env.simulator
-                    root_state = sim.robot_root_states[:1].detach().cpu().numpy().reshape(-1)
-                    dof_state = sim.dof_pos[:1].detach().cpu().numpy().reshape(-1)
-                    frame_data = {
-                        'root_pos': root_state[:3].copy(),
-                        'root_quat_xyzw': root_state[3:7].copy(),
-                        'dof_pos': dof_state.copy(),
-                    }
-                    # Get object state via command manager
-                    mc = self.env.command_manager.get_state("motion_command")
-                    if mc is not None and hasattr(mc, 'simulator_object_pos_w'):
-                        obj_pos = mc.simulator_object_pos_w[0].detach().cpu().numpy()
-                        obj_quat = mc.simulator_object_quat_w[0].detach().cpu().numpy()
-                        frame_data['obj_pos'] = obj_pos.copy()
-                        frame_data['obj_quat_xyzw'] = obj_quat.copy()
-                    recorded_qpos.append(frame_data)
-                except Exception as e:
-                    if step == 1:
-                        logger.warning(f"[eval] Failed to record state: {e}")
-                        save_fpv = False
+                    fpv_recorder.capture()
+                except Exception as exc:
+                    logger.warning(f"[eval] FPV capture failed at step {step}: {exc}")
+                    fpv_recorder = None
 
             reward_scalar = reward.sum().item() if hasattr(reward, 'sum') else float(reward)
             episode_reward += reward_scalar
@@ -1071,6 +1063,9 @@ class FastSACAgent(BaseAlgo):
                 )
                 episode_reward = 0.0
                 episode_steps = 0
+                if stop_fpv_after_first_episode:
+                    logger.info("[eval] Stopping after first completed episode (FPV capture).")
+                    break
 
         # Final summary
         if num_episodes > 0:
@@ -1086,12 +1081,62 @@ class FastSACAgent(BaseAlgo):
                 f"(no episode completed)"
             )
 
-        # Save recorded states and render FPV offline with MuJoCo
-        if save_fpv and recorded_qpos:
-            self._render_fpv_offline(
-                recorded_qpos, fpv_output_dir,
-                fpv_width, fpv_height, fpv_fov,
+        if fpv_recorder is not None and fpv_recorder.num_captured() > 0:
+            try:
+                fps = self._get_eval_fps(default_fps=50)
+                fpv_recorder.save(fpv_output_dir, fps=fps)
+            finally:
+                fpv_recorder.cleanup()
+
+    def _maybe_setup_isaacsim_fpv_recorder(
+        self, fpv_width: int, fpv_height: int, fpv_fov: float,
+    ):
+        """Spawn a head-mounted IsaacSim camera if the simulator is IsaacSim.
+
+        Returns ``None`` when running on a non-IsaacSim backend or when the
+        replicator camera pipeline is not available (e.g. ``--enable_cameras``
+        was not passed).
+        """
+        sim = getattr(self.env, "simulator", None)
+        sim_module = type(sim).__module__ if sim is not None else ""
+        if "isaacsim" not in sim_module:
+            logger.info(
+                f"[eval] FPV requested but simulator module is {sim_module!r}; "
+                "IsaacSim FPV recorder is only supported on IsaacSim."
             )
+            return None
+        try:
+            from holosoma.simulator.isaacsim.fpv_camera import IsaacSimFPVRecorder
+            recorder = IsaacSimFPVRecorder(
+                simulator=sim,
+                width=fpv_width,
+                height=fpv_height,
+                vertical_fov_deg=fpv_fov,
+                head_body_name="head_link",
+            )
+            recorder.setup()
+            return recorder
+        except Exception as exc:
+            logger.warning(
+                f"[eval] Failed to set up IsaacSim FPV recorder: {exc}. "
+                "Make sure --enable_cameras is passed to the AppLauncher."
+            )
+            return None
+
+    def _get_eval_fps(self, default_fps: int = 50) -> int:
+        """Best-effort retrieval of the policy control frequency (Hz)."""
+        try:
+            sim = self.env.simulator
+            dt = getattr(sim, "control_dt", None) or getattr(sim, "dt", None)
+            if dt is None and hasattr(self.env, "cfg"):
+                control_freq = getattr(getattr(self.env.cfg, "simulator", None), "control_freq", None)
+                if control_freq:
+                    return int(control_freq)
+            if dt is not None and dt > 0:
+                return max(1, int(round(1.0 / float(dt))))
+        except Exception:
+            pass
+        return default_fps
 
     def _render_fpv_offline(
         self,
