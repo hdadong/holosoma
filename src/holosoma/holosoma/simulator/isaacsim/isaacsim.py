@@ -450,73 +450,117 @@ class IsaacSim(BaseSimulator):
         )
         light_config1.func("/World/DomeLight", light_config1, translation=(1, 0, 10))
 
-    def _setup_fpv_tiled_camera(self) -> None:
-        """Register a head-mounted ``TiledCamera`` to ``scene.sensors``.
+    # Default camera spec: (parent body name, offset (x, y, z) in body's ROS frame).
+    # Robot link convention: +X forward, +Y left, +Z up. With "world" convention
+    # + identity rotation, the camera optical axis points along the body's +X.
+    # For wrist_yaw_link, +X already points down the forearm out toward the palm,
+    # so a small +X offset puts the camera near the back of the hand looking at
+    # whatever is being grasped.
+    _FPV_CAMERA_DEFAULTS: dict[str, tuple[str, tuple[float, float, float]]] = {
+        "head":        ("head_link",            (0.15, 0.0, 0.10)),
+        "left_wrist":  ("left_wrist_yaw_link",  (0.05, 0.0, 0.04)),
+        "right_wrist": ("right_wrist_yaw_link", (0.05, 0.0, 0.04)),
+    }
 
-        Driven by environment variables so we don't have to extend the
-        serialized config schema:
+    def _setup_fpv_tiled_camera(self) -> None:
+        """Register one or more head/wrist FPV ``TiledCamera`` sensors.
+
+        Driven by environment variables so we don't extend the serialized
+        config schema:
 
         ``HOLOSOMA_FPV_ENABLE``      — must be "1" for setup to run.
-        ``HOLOSOMA_FPV_HEAD_LINK``   — body name to attach to (default ``head_link``).
-        ``HOLOSOMA_FPV_WIDTH/HEIGHT``— image size in px (default 640x480).
-        ``HOLOSOMA_FPV_VFOV_DEG``    — vertical FOV in deg (default 60).
-        ``HOLOSOMA_FPV_OFFSET_XYZ``  — comma-separated meters in head_link's
-                                       ROS frame (+x forward, +y left, +z up).
-                                       Default ``0.15,0.0,0.10``.
+        ``HOLOSOMA_FPV_CAMS``        — comma-separated list of camera names
+                                       drawn from ``_FPV_CAMERA_DEFAULTS``.
+                                       Default ``head,left_wrist,right_wrist``.
+        ``HOLOSOMA_FPV_WIDTH/HEIGHT``— image size in px (default 640x480),
+                                       shared across cameras.
+        ``HOLOSOMA_FPV_VFOV_DEG``    — vertical FOV in deg (default 60),
+                                       shared across cameras.
+        ``HOLOSOMA_FPV_<NAME>_LINK`` — override parent body for camera
+                                       ``<name>``.
+        ``HOLOSOMA_FPV_<NAME>_OFFSET_XYZ`` — comma-separated meters in the
+                                            parent body's ROS frame
+                                            (+x forward, +y left, +z up).
 
-        Must be called BEFORE ``scene.clone_environments`` so the camera
-        prim_path glob ``env_.*`` is replicated to every env.
+        Backward compat: ``HOLOSOMA_FPV_HEAD_LINK`` and
+        ``HOLOSOMA_FPV_OFFSET_XYZ`` are still respected as overrides for
+        the ``head`` camera.
+
+        Must be called BEFORE ``scene.clone_environments`` so the
+        ``env_.*`` prim_path glob replicates each camera to every env.
         """
-        head_body = os.environ.get("HOLOSOMA_FPV_HEAD_LINK", "head_link")
+        cam_list = os.environ.get(
+            "HOLOSOMA_FPV_CAMS", "head,left_wrist,right_wrist"
+        )
+        cam_names = [c.strip() for c in cam_list.split(",") if c.strip()]
+
         width = int(os.environ.get("HOLOSOMA_FPV_WIDTH", "640"))
         height = int(os.environ.get("HOLOSOMA_FPV_HEIGHT", "480"))
         vfov_deg = float(os.environ.get("HOLOSOMA_FPV_VFOV_DEG", "60"))
-        offset_str = os.environ.get("HOLOSOMA_FPV_OFFSET_XYZ", "0.15,0.0,0.10")
-        try:
-            offset_xyz = tuple(float(x) for x in offset_str.split(","))
-            assert len(offset_xyz) == 3
-        except Exception:
-            logger.warning(f"[fpv] Bad HOLOSOMA_FPV_OFFSET_XYZ={offset_str!r}; using default.")
-            offset_xyz = (0.15, 0.0, 0.10)
 
-        # Compute focal length to match requested vertical FOV with a
-        # standard 35 mm equivalent vertical aperture of 24 mm.
         vertical_aperture_mm = 24.0
-        aspect_ratio = width / max(1, height)
-        horizontal_aperture_mm = vertical_aperture_mm * aspect_ratio
+        horizontal_aperture_mm = vertical_aperture_mm * (width / max(1, height))
         focal_length_mm = vertical_aperture_mm / (2.0 * math.tan(math.radians(vfov_deg) / 2.0))
 
-        # IsaacLab OffsetCfg conventions (forward axis):
-        #   "opengl" → -Z   (USD/OpenGL camera default)
-        #   "ros"    → +Z   (ROS image_pipeline / OpenCV image plane)
-        #   "world"  → +X   (ROS robot-link convention: +X forward, +Y left, +Z up)
-        # head_link uses the robot-link frame, so "world" + identity rotation
-        # makes the optical axis point along head_link's +X (forward).
-        cfg = TiledCameraCfg(
-            prim_path=f"/World/envs/env_.*/Robot/{head_body}/FPVCamera",
-            offset=TiledCameraCfg.OffsetCfg(
-                pos=offset_xyz,
-                rot=(1.0, 0.0, 0.0, 0.0),
-                convention="world",
-            ),
-            spawn=sim_utils.PinholeCameraCfg(
-                focal_length=focal_length_mm,
-                focus_distance=400.0,
-                horizontal_aperture=horizontal_aperture_mm,
-                vertical_aperture=vertical_aperture_mm,
-                clipping_range=(0.05, 1000.0),
-            ),
-            data_types=["rgb"],
-            width=width,
-            height=height,
-            update_period=0.0,
-        )
-        self.fpv_camera = TiledCamera(cfg)
-        self.scene.sensors["fpv_camera"] = self.fpv_camera
-        logger.info(
-            f"[fpv] Registered TiledCamera under env_*/Robot/{head_body}/FPVCamera "
-            f"(W={width} H={height} vfov={vfov_deg}deg offset={offset_xyz}, convention=world)"
-        )
+        self._fpv_cameras: dict[str, TiledCamera] = {}
+
+        for name in cam_names:
+            if name not in self._FPV_CAMERA_DEFAULTS:
+                logger.warning(
+                    f"[fpv] Unknown camera name {name!r} (known: "
+                    f"{list(self._FPV_CAMERA_DEFAULTS)}); skipping"
+                )
+                continue
+            default_link, default_offset = self._FPV_CAMERA_DEFAULTS[name]
+
+            # Per-camera env-var overrides, with legacy fallback for `head`.
+            link = os.environ.get(f"HOLOSOMA_FPV_{name.upper()}_LINK", default_link)
+            offset_str = os.environ.get(
+                f"HOLOSOMA_FPV_{name.upper()}_OFFSET_XYZ",
+                ",".join(f"{x:g}" for x in default_offset),
+            )
+            if name == "head":
+                link = os.environ.get("HOLOSOMA_FPV_HEAD_LINK", link)
+                offset_str = os.environ.get("HOLOSOMA_FPV_OFFSET_XYZ", offset_str)
+            try:
+                offset_xyz = tuple(float(x) for x in offset_str.split(","))
+                assert len(offset_xyz) == 3
+            except Exception:
+                logger.warning(
+                    f"[fpv:{name}] Bad offset {offset_str!r}; using default {default_offset}"
+                )
+                offset_xyz = default_offset
+
+            cfg = TiledCameraCfg(
+                prim_path=f"/World/envs/env_.*/Robot/{link}/FPVCamera_{name}",
+                offset=TiledCameraCfg.OffsetCfg(
+                    pos=offset_xyz,
+                    rot=(1.0, 0.0, 0.0, 0.0),
+                    convention="world",
+                ),
+                spawn=sim_utils.PinholeCameraCfg(
+                    focal_length=focal_length_mm,
+                    focus_distance=400.0,
+                    horizontal_aperture=horizontal_aperture_mm,
+                    vertical_aperture=vertical_aperture_mm,
+                    clipping_range=(0.05, 1000.0),
+                ),
+                data_types=["rgb"],
+                width=width,
+                height=height,
+                update_period=0.0,
+            )
+            cam = TiledCamera(cfg)
+            sensor_key = f"fpv_camera_{name}"
+            self.scene.sensors[sensor_key] = cam
+            self._fpv_cameras[name] = cam
+            logger.info(
+                f"[fpv:{name}] Registered TiledCamera at env_*/Robot/{link}/FPVCamera_{name} "
+                f"(W={width} H={height} vfov={vfov_deg}deg offset={offset_xyz})"
+            )
+
+        if not self._fpv_cameras:
+            logger.warning("[fpv] No FPV cameras were registered.")
 
     def _get_base_body_name(self, preference_order: list[str]) -> str:
         """Get the base body name with fallback logic.
