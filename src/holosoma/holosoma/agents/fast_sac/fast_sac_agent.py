@@ -1007,18 +1007,23 @@ class FastSACAgent(BaseAlgo):
         fpv_width: int = 640,
         fpv_height: int = 480,
         fpv_fov: float = 60.0,
+        dump_obs_path: str | None = None,
     ):
         self.env.set_is_evaluating()
 
         # Set up the IsaacSim head-mounted FPV recorder before reset, so the camera
-        # exists for the very first frame.
+        # exists for the very first frame. When ``dump_obs_path`` is set we run for
+        # the full ``max_eval_steps`` (resetting on done) instead of stopping after
+        # the first episode — this is the dataset-collection mode.
         fpv_recorder = None
         stop_fpv_after_first_episode = False
-        if save_fpv:
+        if save_fpv or dump_obs_path is not None:
             fpv_recorder = self._maybe_setup_isaacsim_fpv_recorder(
                 fpv_width, fpv_height, fpv_fov,
             )
-            stop_fpv_after_first_episode = fpv_recorder is not None
+            stop_fpv_after_first_episode = (
+                fpv_recorder is not None and dump_obs_path is None
+            )
 
         obs = self.env.reset()
 
@@ -1036,14 +1041,26 @@ class FastSACAgent(BaseAlgo):
             actions = self.actor(normalized_obs)[0]
             obs, reward, done, info = self.env.step(actions)
 
+            reward_scalar = reward.sum().item() if hasattr(reward, 'sum') else float(reward)
+            done_any = done.any().item() if hasattr(done, 'any') else bool(done)
             if fpv_recorder is not None:
                 try:
-                    fpv_recorder.capture()
+                    action_np = None
+                    if hasattr(actions, 'detach'):
+                        action_np = (
+                            actions[0].detach().to('cpu').contiguous().numpy()
+                            if actions.ndim > 1 else
+                            actions.detach().to('cpu').contiguous().numpy()
+                        )
+                    fpv_recorder.capture(
+                        action=action_np,
+                        reward=reward_scalar,
+                        done=done_any,
+                    )
                 except Exception as exc:
                     logger.warning(f"[eval] FPV capture failed at step {step}: {exc}")
                     fpv_recorder = None
 
-            reward_scalar = reward.sum().item() if hasattr(reward, 'sum') else float(reward)
             episode_reward += reward_scalar
             episode_steps += 1
             step += 1
@@ -1051,7 +1068,6 @@ class FastSACAgent(BaseAlgo):
             if step % 50 == 0:
                 logger.info(f"[eval] step={step} episode_reward={episode_reward:.3f} episode_steps={episode_steps}")
 
-            done_any = done.any().item() if hasattr(done, 'any') else bool(done)
             if done_any:
                 num_episodes += 1
                 total_reward += episode_reward
@@ -1083,8 +1099,11 @@ class FastSACAgent(BaseAlgo):
 
         if fpv_recorder is not None and fpv_recorder.num_captured() > 0:
             try:
-                fps = self._get_eval_fps(default_fps=50)
-                fpv_recorder.save(fpv_output_dir, fps=fps)
+                if dump_obs_path is not None:
+                    fpv_recorder.save_npz(dump_obs_path)
+                if save_fpv:
+                    fps = self._get_eval_fps(default_fps=50)
+                    fpv_recorder.save(fpv_output_dir, fps=fps)
             finally:
                 fpv_recorder.cleanup()
 

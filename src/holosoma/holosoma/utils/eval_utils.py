@@ -73,6 +73,8 @@ class CheckpointConfig:
     """FPV vertical field of view in degrees."""
     max_eval_steps: int | None = None
     """Optional override for training.max_eval_steps when running eval."""
+    dump_obs_path: str | None = None
+    """If set, dump per-step (RGB cameras + actions + rewards + dones) to this .npz path. Runs full max_eval_steps without early stopping."""
 
 
 def load_saved_experiment_config(checkpoint_cfg: CheckpointConfig) -> tuple[ExperimentConfig, str | None]:

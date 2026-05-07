@@ -59,6 +59,10 @@ class IsaacSimFPVRecorder:
         self._sensors: dict[str, "object"] = {}  # name -> TiledCamera
         self._frames: dict[str, list[np.ndarray]] = {}
         self._dims: dict[str, tuple[int, int]] = {}  # name -> (W, H)
+        # Aux per-step buffers for trajectory dump (action/reward/done).
+        self._actions: list[np.ndarray] = []
+        self._rewards: list[float] = []
+        self._dones: list[bool] = []
 
     def setup(self) -> None:
         """Resolve all registered FPV cameras from the live scene."""
@@ -86,10 +90,18 @@ class IsaacSimFPVRecorder:
                 "HOLOSOMA_FPV_ENABLE=1 and --enable_cameras passed to AppLauncher?"
             )
 
-    def capture(self) -> dict[str, np.ndarray]:
+    def capture(
+        self,
+        action: np.ndarray | None = None,
+        reward: float | None = None,
+        done: bool | None = None,
+    ) -> dict[str, np.ndarray]:
         """Read the env_0 RGB tile from every registered FPV camera.
 
-        ``TiledCamera`` updates each ``scene.update()`` (called from
+        Optionally accepts the per-step ``action`` (1-D float array),
+        scalar ``reward``, and ``done`` flag, which are buffered for
+        downstream ``save_npz`` calls. ``TiledCamera`` updates each
+        ``scene.update()`` (called from
         :meth:`IsaacSim.simulate_at_each_physics_step`) because IsaacLab
         marks it as an RTX sensor → ``has_rtx_sensors()=True`` triggers
         the renderer tick. No manual ``sim.render()`` call needed.
@@ -110,6 +122,13 @@ class IsaacSimFPVRecorder:
                     f"[fpv:{name}] First frame: shape={frame.shape}, "
                     f"dtype={frame.dtype}, non_zero={bool(frame.any())}"
                 )
+
+        if action is not None:
+            self._actions.append(np.asarray(action, dtype=np.float32).reshape(-1))
+        if reward is not None:
+            self._rewards.append(float(reward))
+        if done is not None:
+            self._dones.append(bool(done))
         return out
 
     def num_captured(self) -> int:
@@ -182,6 +201,42 @@ class IsaacSimFPVRecorder:
         except Exception as exc:
             logger.warning(f"[fpv:{name}] ffmpeg failed ({exc}); PNG frames are still on disk")
         return mp4_path
+
+    def save_npz(self, path: str) -> Path:
+        """Dump frames + per-step action/reward/done to a single .npz.
+
+        Output keys (numpy arrays):
+          ``obs_<camera>_rgb`` : (T, H, W, 3) uint8
+          ``actions``          : (T, action_dim) float32
+          ``rewards``          : (T,) float32
+          ``dones``            : (T,) bool
+        """
+        out = Path(path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        if not self._frames:
+            logger.warning(f"[fpv] save_npz: no frames buffered, skipping {out}")
+            return out
+
+        save_dict: dict[str, np.ndarray] = {}
+        T = min(len(v) for v in self._frames.values())
+        for name, frames in self._frames.items():
+            arr = np.stack(frames[:T], axis=0)  # (T, H, W, 3) uint8
+            save_dict[f"obs_{name}_rgb"] = arr
+
+        if self._actions:
+            T_a = min(T, len(self._actions))
+            save_dict["actions"] = np.stack(self._actions[:T_a], axis=0)
+        if self._rewards:
+            T_r = min(T, len(self._rewards))
+            save_dict["rewards"] = np.asarray(self._rewards[:T_r], dtype=np.float32)
+        if self._dones:
+            T_d = min(T, len(self._dones))
+            save_dict["dones"] = np.asarray(self._dones[:T_d], dtype=bool)
+
+        np.savez_compressed(out, **save_dict)
+        sizes = ", ".join(f"{k}={v.shape}" for k, v in save_dict.items())
+        logger.info(f"[fpv] save_npz wrote {out} ({sizes})")
+        return out
 
     def cleanup(self) -> None:
         # Sensor lifecycle is owned by the scene; nothing to detach here.

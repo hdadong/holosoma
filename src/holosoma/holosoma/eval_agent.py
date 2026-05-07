@@ -37,11 +37,11 @@ def run_eval_with_tyro(
     #   1. AppLauncher to start with --enable_cameras.
     #   2. IsaacSim._setup_scene to register the TiledCamera before
     #      scene.clone_environments — gated by HOLOSOMA_FPV_ENABLE=1.
-    if checkpoint_cfg.save_fpv:
+    if checkpoint_cfg.save_fpv or checkpoint_cfg.dump_obs_path is not None:
         if "--enable_cameras" not in sys.argv:
             sys.argv.append("--enable_cameras")
             logger.info(
-                "[eval] save_fpv=True → injected --enable_cameras for IsaacSim AppLauncher"
+                "[eval] FPV requested → injected --enable_cameras for IsaacSim AppLauncher"
             )
         os.environ["HOLOSOMA_FPV_ENABLE"] = "1"
         os.environ["HOLOSOMA_FPV_WIDTH"] = str(checkpoint_cfg.fpv_width)
@@ -102,6 +102,7 @@ def run_eval_with_tyro(
         fpv_width=checkpoint_cfg.fpv_width,
         fpv_height=checkpoint_cfg.fpv_height,
         fpv_fov=checkpoint_cfg.fpv_fov,
+        dump_obs_path=checkpoint_cfg.dump_obs_path,
     )
 
     # Cleanup simulation app
@@ -122,7 +123,7 @@ def main() -> None:
     # for the `list[SceneFileConfig]` field if we try to pass these as CLI flags
     # (tyro 1.0.13 limitation). So apply the overrides in-memory here and skip
     # the second tyro.cli call entirely when no extra overrides are present.
-    if checkpoint_cfg.save_fpv:
+    if checkpoint_cfg.save_fpv or checkpoint_cfg.dump_obs_path is not None:
         eval_cfg = dataclasses.replace(
             eval_cfg,
             training=dataclasses.replace(
@@ -133,7 +134,7 @@ def main() -> None:
             ),
         )
         logger.info(
-            "[eval] save_fpv=True → forcing training.headless=True, num_envs=1, "
+            "[eval] FPV/dump enabled → forcing training.headless=True, num_envs=1, "
             f"max_eval_steps={eval_cfg.training.max_eval_steps}"
         )
 
