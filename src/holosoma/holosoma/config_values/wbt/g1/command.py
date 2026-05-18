@@ -49,6 +49,13 @@ motion_config_w_object_short_0_85_no_default_pose = replace(
     enable_default_pose_append=False,
 )
 
+motion_config_w_object_short_0_85_freeze100_no_default_pose = replace(
+    motion_config,
+    motion_file="holosoma/data/motions/g1_29dof/whole_body_tracking/sub3_largebox_003_mj_w_obj_short_0_85_freeze100.npz",
+    enable_default_pose_prepend=False,
+    enable_default_pose_append=False,
+)
+
 g1_29dof_wbt_command = CommandManagerCfg(
     params={},
     setup_terms={
@@ -95,8 +102,21 @@ g1_29dof_wbt_command_w_object_short_0_85_no_default_pose = replace(
     },
 )
 
+g1_29dof_wbt_command_w_object_short_0_85_freeze100_no_default_pose = replace(
+    g1_29dof_wbt_command,
+    setup_terms={
+        "motion_command": CommandTermCfg(
+            func="holosoma.managers.command.terms.wbt:MotionCommand",
+            params={
+                "motion_config": motion_config_w_object_short_0_85_freeze100_no_default_pose,
+            },
+        )
+    },
+)
+
 __all__ = [
     "g1_29dof_wbt_command",
     "g1_29dof_wbt_command_w_object",
     "g1_29dof_wbt_command_w_object_short_0_85_no_default_pose",
+    "g1_29dof_wbt_command_w_object_short_0_85_freeze100_no_default_pose",
 ]

@@ -200,11 +200,17 @@ g1_29dof_wbt_fast_sac_w_object_1kg_short_0_85 = replace(
     ),
 )
 
+g1_29dof_wbt_fast_sac_w_object_1kg_short_0_85_freeze100 = replace(
+    g1_29dof_wbt_fast_sac_w_object_1kg_short_0_85,
+    command=command.g1_29dof_wbt_command_w_object_short_0_85_freeze100_no_default_pose,
+)
+
 __all__ = [
     "g1_29dof_wbt",
     "g1_29dof_wbt_fast_sac",
     "g1_29dof_wbt_fast_sac_w_object",
     "g1_29dof_wbt_fast_sac_w_object_1kg_short_0_85",
+    "g1_29dof_wbt_fast_sac_w_object_1kg_short_0_85_freeze100",
     "g1_29dof_wbt_w_object",
 ]
 

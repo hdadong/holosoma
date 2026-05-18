@@ -5,6 +5,7 @@ from holosoma.config_values.loco.t1.command import t1_29dof_command
 from holosoma.config_values.wbt.g1.command import (
     g1_29dof_wbt_command,
     g1_29dof_wbt_command_w_object,
+    g1_29dof_wbt_command_w_object_short_0_85_freeze100_no_default_pose,
     g1_29dof_wbt_command_w_object_short_0_85_no_default_pose,
 )
 
