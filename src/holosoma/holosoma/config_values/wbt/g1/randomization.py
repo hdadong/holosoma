@@ -141,4 +141,32 @@ g1_29dof_wbt_randomization_w_object = RandomizationManagerCfg(
     },
 )
 
-__all__ = ["g1_29dof_wbt_randomization", "g1_29dof_wbt_randomization_w_object"]
+object_state_dr_at_setup_no_mass_inertia = {
+    "randomize_object_rigid_body_material_startup": RandomizationTermCfg(
+        func="holosoma.managers.randomization.terms.locomotion:randomize_object_rigid_body_material_startup",
+        params={
+            "static_friction_range": [0.1, 0.6],
+            "dynamic_friction_range": [0.1, 0.6],
+            "restitution_range": [0.0, 1.0],
+        },
+    ),
+}
+
+g1_29dof_wbt_randomization_w_object_no_obj_mass_inertia_dr = RandomizationManagerCfg(
+    setup_terms={
+        **base_setup_terms,
+        **object_state_dr_at_setup_no_mass_inertia,
+    },
+    reset_terms={
+        **base_reset_terms,
+    },
+    step_terms={
+        **base_step_terms,
+    },
+)
+
+__all__ = [
+    "g1_29dof_wbt_randomization",
+    "g1_29dof_wbt_randomization_w_object",
+    "g1_29dof_wbt_randomization_w_object_no_obj_mass_inertia_dr",
+]

@@ -179,10 +179,32 @@ g1_29dof_wbt_fast_sac_w_object = replace(
     ),
 )
 
+g1_29dof_wbt_fast_sac_w_object_1kg_short_0_85 = replace(
+    g1_29dof_wbt_fast_sac,
+    command=command.g1_29dof_wbt_command_w_object_short_0_85_no_default_pose,
+    robot=replace(
+        robot.g1_29dof_w_object,
+        asset=replace(robot.g1_29dof_w_object.asset, enable_self_collisions=True),
+        object=replace(
+            robot.g1_29dof_w_object.object,
+            object_urdf_path="holosoma/data/motions/g1_29dof/whole_body_tracking/objects_largebox_1kg.urdf",
+        ),
+        init_state=replace(robot.g1_29dof_w_object.init_state, pos=[0.0, 0.0, 0.76]),
+    ),
+    randomization=randomization.g1_29dof_wbt_randomization_w_object_no_obj_mass_inertia_dr,
+    observation=observation.g1_29dof_wbt_observation_w_object,
+    reward=reward.g1_29dof_wbt_reward_w_object,
+    simulator=replace(
+        simulator.isaacsim,
+        config=replace(simulator.isaacsim.config, scene=replace(simulator.isaacsim.config.scene, env_spacing=0.0)),
+    ),
+)
+
 __all__ = [
     "g1_29dof_wbt",
     "g1_29dof_wbt_fast_sac",
     "g1_29dof_wbt_fast_sac_w_object",
+    "g1_29dof_wbt_fast_sac_w_object_1kg_short_0_85",
     "g1_29dof_wbt_w_object",
 ]
 

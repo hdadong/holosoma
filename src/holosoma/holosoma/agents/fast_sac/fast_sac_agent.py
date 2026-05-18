@@ -16,6 +16,7 @@ from holosoma.agents.fast_sac.fast_sac_utils import (
     EmpiricalNormalization,
     SimpleReplayBuffer,
     save_params,
+    save_params_light,
 )
 from holosoma.agents.modules.augmentation_utils import SymmetryUtils
 from holosoma.agents.modules.logging_utils import LoggingHelper
@@ -637,10 +638,13 @@ class FastSACAgent(BaseAlgo):
         self.critic_obs_normalizer.load_state_dict(torch_checkpoint["critic_obs_normalizer_state"])
         self.qnet_target.load_state_dict(torch_checkpoint["qnet_target_state_dict"])
         self.log_alpha.data.copy_(torch_checkpoint["log_alpha"].to(self.device))
-        self.actor_optimizer.load_state_dict(torch_checkpoint["actor_optimizer_state_dict"])
-        self.q_optimizer.load_state_dict(torch_checkpoint["q_optimizer_state_dict"])
-        self.alpha_optimizer.load_state_dict(torch_checkpoint["alpha_optimizer_state_dict"])
-        self.scaler.load_state_dict(torch_checkpoint["grad_scaler_state_dict"])
+        # Lightweight checkpoints written by save_light omit optimizer states.
+        if "actor_optimizer_state_dict" in torch_checkpoint:
+            self.actor_optimizer.load_state_dict(torch_checkpoint["actor_optimizer_state_dict"])
+            self.q_optimizer.load_state_dict(torch_checkpoint["q_optimizer_state_dict"])
+            self.alpha_optimizer.load_state_dict(torch_checkpoint["alpha_optimizer_state_dict"])
+        if torch_checkpoint.get("grad_scaler_state_dict") is not None:
+            self.scaler.load_state_dict(torch_checkpoint["grad_scaler_state_dict"])
         self.global_step = torch_checkpoint["global_step"]
         self._restore_env_state(torch_checkpoint.get("env_state"))
 
@@ -791,8 +795,9 @@ class FastSACAgent(BaseAlgo):
                 if args.save_interval > 0 and self.global_step > 0 and self.global_step % args.save_interval == 0:
                     if self.is_main_process:
                         logger.info(f"Saving model at global step {self.global_step}")
-                        self.save(os.path.join(self.log_dir, f"model_{self.global_step:07d}.pt"))
-                        self.export(onnx_file_path=os.path.join(self.log_dir, f"model_{self.global_step:07d}.onnx"))
+                        self.save_light(os.path.join(self.log_dir, f"model_{self.global_step:07d}.pt"))
+                        # Skip ONNX export at save_interval — downstream collectors only use the .pt.
+                        # self.export(onnx_file_path=os.path.join(self.log_dir, f"model_{self.global_step:07d}.onnx"))
 
             # Avoid global_step being incremented beyond args.num_learning_iterations, so that the final checkpoint is
             # saved at exactly args.num_learning_iterations. In the `while` condition, we check for self.global_step <=
@@ -820,6 +825,26 @@ class FastSACAgent(BaseAlgo):
             self.actor_optimizer,
             self.q_optimizer,
             self.alpha_optimizer,
+            self.scaler,
+            self.config,
+            path,
+            save_fn=self.logging_helper.save_checkpoint_artifact,
+            env_state=env_state or None,
+            metadata=self._checkpoint_metadata(iteration=self.global_step),
+        )
+
+    def save_light(self, path: str) -> None:
+        # Drops the three AdamW optimizer states (~2/3 of full ckpt size).
+        # Suitable for distillation / rollout collection, not for resuming training.
+        env_state = self._collect_env_state()
+        save_params_light(
+            self.global_step,
+            self.actor,
+            self.qnet,
+            self.qnet_target,
+            self.log_alpha,
+            self.obs_normalizer,
+            self.critic_obs_normalizer,
             self.scaler,
             self.config,
             path,

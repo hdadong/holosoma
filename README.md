@@ -118,7 +118,7 @@ docker run --rm -d \
       python src/holosoma/holosoma/train_agent.py \
           exp:g1-29dof-wbt-fast-sac-w-object \
           logger:wandb-offline \
-          --logger.video.enabled=False \
+          --logger.video.enabled=True \
           --training.num-envs=2048 \
           2>&1 | tee logs/boxcarry_train.log
     '
@@ -145,8 +145,9 @@ Flag notes:
   `api.wandb.ai` during training). Sync later with `wandb sync`. Swap to
   `logger:wandb` for online logging, or `logger:disabled` to turn Wandb off
   entirely (TensorBoard still runs).
-- `--logger.video.enabled=False` — disable rendering on headless hosts.
-  Remove this flag if a display / xvfb is available.
+- `--logger.video.enabled=True` — record training-rollout videos and upload
+  them to Wandb. Set `False` if your host cannot do offscreen rendering.
+  Video recording auto-enables `--enable_cameras`.
 
 #### Interactive shell
 
