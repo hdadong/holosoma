@@ -149,6 +149,108 @@ Flag notes:
   them to Wandb. Set `False` if your host cannot do offscreen rendering.
   Video recording auto-enables `--enable_cameras`.
 
+#### Train the pre100_app100 variant (1 kg box, no obj-mass/Ixx DR)
+
+This preset uses the OMOMO box-carrying motion with 100 frames lerp-prepended
+from the WBT default pose and 100 frames lerp-appended back to it, runs on a
+fixed 1 kg `objects_largebox_1kg.urdf`, disables the box mass/Ixx DR, and turns
+off the runtime default-pose prepend/append (the transitions are now baked
+into the npz). Save_interval is tightened to every 100 steps so that
+distillation/data-collection downstream has dense checkpoints.
+
+```bash
+mkdir -p ~/holosoma_logs
+
+docker run --rm -d \
+    --name holosoma-wbt-boxcarry-pre100app100 \
+    --runtime=nvidia \
+    --gpus '"device=2"' \
+    --shm-size=16g \
+    -e OMNI_KIT_ACCEPT_EULA=1 \
+    -v "$(pwd)":/workspace/holosoma \
+    -v ~/holosoma_logs:/workspace/holosoma/logs \
+    -v ~/.netrc:/root/.netrc:ro \
+    --entrypoint bash \
+    holosoma:wbt -c '
+      source /root/.holosoma_deps/miniconda3/etc/profile.d/conda.sh &&
+      conda activate hssim &&
+      cd /workspace/holosoma &&
+      python src/holosoma/holosoma/train_agent.py \
+          exp:g1-29dof-wbt-fast-sac-w-object-1kg-pre100-app100 \
+          logger:wandb \
+          --logger.video.enabled=True \
+          --training.num-envs=3072 \
+          --algo.config.save-interval=100 \
+          --algo.config.num-learning-iterations=400000 \
+          2>&1 | tee logs/pre100app100_400k_train.log
+    '
+```
+
+Notes specific to this preset:
+- `--training.num-envs=3072` — 4096 envs OOMs PhysX on a 24 GB GPU (RTX 4090)
+  partway through training; 3072 is the largest stable setting for this
+  config. Fall back to 2048 if 3072 also OOMs.
+- `--algo.config.save-interval=100` and `--algo.config.num-learning-iterations=400000`
+  → 4000 light checkpoints, ~52 GB on disk. Drop the interval (e.g. 1000) if
+  you don't need that density.
+- `logger:wandb` (online) requires the host `~/.netrc` mount. Swap to
+  `logger:wandb-offline` if the box has no internet.
+- The reference motion `sub3_largebox_003_mj_w_obj_pre100_app100.npz` ships
+  with the repo. To regenerate from the base clip:
+  `python scripts/add_default_pose_transitions.py --prepend-seconds 2.0 --append-seconds 2.0`.
+
+#### Evaluate a trained checkpoint and render mp4
+
+```bash
+RUN_DIR=WholeBodyTracking/20260518_143923-g1_29dof_wbt_fast_sac_manager-locomotion
+CKPT=model_0249400.pt
+
+docker run --rm -d \
+    --name holosoma-wbt-boxcarry-eval \
+    --runtime=nvidia \
+    --gpus '"device=0"' \
+    --shm-size=16g \
+    -e OMNI_KIT_ACCEPT_EULA=1 \
+    -v "$(pwd)":/workspace/holosoma \
+    -v ~/holosoma_logs:/workspace/holosoma/logs \
+    --entrypoint bash \
+    holosoma:wbt -c "
+      source /root/.holosoma_deps/miniconda3/etc/profile.d/conda.sh &&
+      conda activate hssim &&
+      cd /workspace/holosoma &&
+      mkdir -p logs/eval_videos &&
+      python src/holosoma/holosoma/eval_agent.py \
+          --checkpoint=/workspace/holosoma/logs/${RUN_DIR}/${CKPT} \
+          --training.headless=True \
+          --training.export-onnx=False \
+          --training.max-eval-steps=1000 \
+          --eval-overrides.headless=True \
+          --eval-overrides.num-envs=1 \
+          --eval-overrides.disable-logger=False \
+          --logger.video.enabled=True \
+          --logger.video.interval=1 \
+          --logger.video.output-format=mp4 \
+          --logger.video.upload-to-wandb=False \
+          --logger.video.save-dir=/workspace/holosoma/logs/eval_videos \
+          2>&1 | tee logs/eval_videos/eval.log
+    "
+```
+
+`eval_overrides.num-envs=1` keeps the rendered scene clean (training rollouts
+look "ghosted" because `env_spacing=0.0` stacks all envs on top of each other
+visually). One mp4 is written per episode.
+
+To **disable all domain randomization** (no pushes, no friction/CoM/joint-bias
+noise) for a clean playback test, add `randomization:g1-29dof-wbt-empty`
+right after `--checkpoint=...`:
+
+```bash
+        --checkpoint=/workspace/holosoma/logs/${RUN_DIR}/${CKPT} \
+        randomization:g1-29dof-wbt-empty \
+        --training.headless=True \
+        ...
+```
+
 #### Interactive shell
 
 ```bash
