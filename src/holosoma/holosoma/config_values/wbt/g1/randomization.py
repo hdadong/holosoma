@@ -165,8 +165,23 @@ g1_29dof_wbt_randomization_w_object_no_obj_mass_inertia_dr = RandomizationManage
     },
 )
 
+g1_29dof_wbt_randomization_empty = RandomizationManagerCfg(
+    setup_terms={
+        "setup_action_delay_buffers": RandomizationTermCfg(
+            func="holosoma.managers.randomization.terms.locomotion:setup_action_delay_buffers",
+            params={
+                "ctrl_delay_step_range": [0, 0],
+                "enabled": False,
+            },
+        ),
+    },
+    reset_terms={},
+    step_terms={},
+)
+
 __all__ = [
     "g1_29dof_wbt_randomization",
     "g1_29dof_wbt_randomization_w_object",
     "g1_29dof_wbt_randomization_w_object_no_obj_mass_inertia_dr",
+    "g1_29dof_wbt_randomization_empty",
 ]

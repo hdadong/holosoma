@@ -41,11 +41,27 @@ DEFAULT_XML = (
 )
 
 
-def shorten_npz(src: Path, dst: Path, start: int, end: int) -> tuple[int, float]:
+def shorten_npz(
+    src: Path,
+    dst: Path,
+    start: int,
+    end: int,
+    freeze_tail_seconds: float = 0.0,
+) -> tuple[int, float]:
     """Slice every time-major array of src[start:end] and save to dst.
 
     All non-time-major scalars/arrays (fps, joint_names, body_names) are
-    copied verbatim. Returns (new_frame_count, fps).
+    copied verbatim.
+
+    If freeze_tail_seconds > 0, pad N = round(freeze_tail_seconds * fps) frames
+    onto the end where:
+      - position-like fields (everything except *_vel*) are repeated from the
+        sliced motion's last frame, and
+      - velocity-like fields (any name containing "vel") are zeroed.
+    The reference for those padded frames is therefore "stand still in the
+    final pose, with zero velocity" -- consistent for reward/termination.
+
+    Returns (new_frame_count, fps).
     """
     non_time_keys = {"fps", "joint_names", "body_names"}
 
@@ -54,21 +70,31 @@ def shorten_npz(src: Path, dst: Path, start: int, end: int) -> tuple[int, float]
         if not (0 <= start < end <= T):
             raise ValueError(f"bad range [{start}:{end}) for T={T}")
 
+        fps = float(np.asarray(d["fps"]).reshape(-1)[0])
+        pad = int(round(freeze_tail_seconds * fps)) if freeze_tail_seconds > 0 else 0
+
         out: dict[str, np.ndarray] = {}
         for k in d.files:
             v = d[k]
             if k in non_time_keys:
                 out[k] = v
+                continue
+            if v.shape[0] != T:
+                raise AssertionError(
+                    f"unexpected T for {k}: {v.shape} (expected first dim {T})"
+                )
+            sliced = v[start:end]
+            if pad > 0:
+                if "vel" in k:  # joint_vel, body_lin_vel_w, body_ang_vel_w, object_*_vel_w
+                    tail = np.zeros((pad, *sliced.shape[1:]), dtype=sliced.dtype)
+                else:
+                    tail = np.broadcast_to(sliced[-1:], (pad, *sliced.shape[1:])).copy()
+                out[k] = np.concatenate([sliced, tail], axis=0)
             else:
-                if v.shape[0] != T:
-                    raise AssertionError(
-                        f"unexpected T for {k}: {v.shape} (expected first dim {T})"
-                    )
-                out[k] = v[start:end]
-        fps = float(np.asarray(d["fps"]).reshape(-1)[0])
+                out[k] = sliced
 
     np.savez(dst, **out)
-    return end - start, fps
+    return (end - start) + pad, fps
 
 
 def render_motion(
@@ -155,15 +181,22 @@ def main() -> None:
                    help="Camera follows the pelvis xy each frame")
     p.add_argument("--no-render", action="store_true",
                    help="Only slice the npz, skip the .mp4")
+    p.add_argument("--freeze-tail-seconds", type=float, default=0.0,
+                   help="Pad N=round(seconds*fps) frames at the tail where positions "
+                        "= sliced last frame and velocities = 0 (default: 0, no pad)")
     args = p.parse_args()
 
     if args.dst is None:
-        args.dst = args.src.with_name(f"{args.src.stem}_short_{args.start}_{args.end}.npz")
+        suffix = f"_short_{args.start}_{args.end}"
+        if args.freeze_tail_seconds > 0:
+            tail_frames = int(round(args.freeze_tail_seconds * 50))  # placeholder fps; recompute after load if needed
+            suffix += f"_freeze{tail_frames}"
+        args.dst = args.src.with_name(f"{args.src.stem}{suffix}.npz")
     if args.mp4 is None:
         args.mp4 = args.dst.with_suffix(".mp4")
 
     args.dst.parent.mkdir(parents=True, exist_ok=True)
-    n, fps = shorten_npz(args.src, args.dst, args.start, args.end)
+    n, fps = shorten_npz(args.src, args.dst, args.start, args.end, args.freeze_tail_seconds)
     print(f"[npz]  {args.dst}  ({n} frames @ {fps:g} fps -> {n / fps:.2f}s)")
 
     if args.no_render:
