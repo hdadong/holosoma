@@ -1028,11 +1028,19 @@ class FastSACAgent(BaseAlgo):
         self.env.set_is_evaluating()
         obs = self.env.reset()
 
+        # HOLOSOMA_EVAL_STOCHASTIC=1 -> sample from the actor's tanh-Gaussian
+        # (training-time policy); default uses tanh(mean) deterministic action.
+        eval_stochastic = os.environ.get("HOLOSOMA_EVAL_STOCHASTIC", "0") == "1"
+        logger.info(f"evaluate_policy: stochastic={eval_stochastic}")
+
         for _ in itertools.islice(itertools.count(), max_eval_steps):
             if self.obs_normalization:
                 normalized_obs = self.obs_normalizer(obs, update=False)
             else:
                 normalized_obs = obs
-            # Actions are already scaled by the actor
-            actions = self.actor(normalized_obs)[0]
+            if eval_stochastic:
+                actions = self.actor.explore(normalized_obs, deterministic=False)
+            else:
+                # Actions are already scaled by the actor
+                actions = self.actor(normalized_obs)[0]
             obs, _, _, _ = self.env.step(actions)
