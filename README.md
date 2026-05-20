@@ -251,6 +251,66 @@ right after `--checkpoint=...`:
         ...
 ```
 
+#### Multi-policy IsaacSim data collection (N ckpts in parallel)
+
+[`scripts/collect_wbt_box_multipolicy.py`](scripts/collect_wbt_box_multipolicy.py)
+runs **N different FastSAC checkpoints** in N parallel IsaacSim envs
+(one ckpt per env) for downstream world-model pretraining. It forks
+the single-policy [`scripts/collect_wbt_box_multienv.py`](scripts/collect_wbt_box_multienv.py)
+collector and swaps `algo.actor` for a `BatchedActorEnsemble` —
+N actors' weights are stacked along a leading dim and one `einsum`
+per `Linear` layer drives all envs in a single forward pass.
+
+Helpers added alongside (lightweight, holosoma-free except where
+noted):
+- [`scripts/_batched_actor_ensemble.py`](scripts/_batched_actor_ensemble.py)
+  — stacks N `Actor` state_dicts + `EmpiricalNormalization` mean/std
+  into one `nn.Module`. Layout assumes the WBT box-carry preset
+  (3 × `(Linear → LayerNorm → SiLU)` blocks; `obs_keys=['actor_obs']`).
+  Mean / log_std / deterministic action / stochastic action all match
+  the reference `Actor.explore` to within `1e-5` absolute (see
+  [`scripts/_test_batched_actor_ensemble.py`](scripts/_test_batched_actor_ensemble.py)).
+- [`scripts/_multipolicy_utils.py`](scripts/_multipolicy_utils.py)
+  — `select_ckpts(...)` deterministically partitions a sorted ckpt
+  list into uniform train/test subsets (no RNG); `MemmapSaver` writes
+  per-field `.npy` memmaps and flushes every chunk so a mid-run crash
+  leaves the prefix on disk.
+
+The collector is driven through LIFT3's docker launcher (lives in the
+LIFT3 worktree at `docker/run_collect_wbt_box_multipolicy_in_docker.sh`);
+a typical 2000-train + 200-test collection looks like:
+
+```bash
+SPLIT=both NUM_TRAIN=2000 NUM_TEST=200 NUM_STEPS=500 CHUNK_STEPS=50 \
+  HOST_GPU=2 SEED=0 OUT_SUBDIR=prod_$(date +%Y%m%d_%H%M%S) \
+  bash <LIFT3_WORKTREE>/docker/run_collect_wbt_box_multipolicy_in_docker.sh
+```
+
+Output structure (under `<LIFT3>/data/box_pretrain_eval_multipolicy/${OUT_SUBDIR}/`):
+
+```
+train/
+  robot_root_pos_w.npy            # (num_steps, num_envs, 3) float32 memmap
+  robot_root_quat_wxyz.npy        # wxyz convention (IsaacLab xyzw -> wxyz)
+  robot_joint_pos.npy / _vel.npy  # (..., 29)
+  robot_track_body_*.npy          # 14 tracked bodies, world + local
+  box_*.npy                       # box pos/quat/lin_vel/ang_vel
+  motion_*.npy / ref_*.npy        # full motion reference at the per-env phase
+  action.npy / done.npy / terminated.npy / truncated.npy
+  ckpt_step.npy + ckpt_paths.json # per-env ckpt manifest
+  metadata.json                   # dof names, motion file, schema
+test/   (same layout, num_envs=NUM_TEST)
+```
+
+`SPLIT=train|test|both` controls which split(s) to collect; `SEED`
+seeds IsaacSim physics / DR / reset so train and test runs share the
+exact same simulation context (only the policies and env count
+differ). `--collector.save-actor-obs=False` /
+`--collector.save-critic-obs=False` are the new defaults — those two
+fields are policy-specific permutations that aren't meaningful when
+each env runs a different policy, and downstream world-model training
+reconstructs the WM-state directly from the raw saved fields anyway.
+
 #### Interactive shell
 
 ```bash
