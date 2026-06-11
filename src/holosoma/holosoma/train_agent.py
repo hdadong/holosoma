@@ -172,6 +172,16 @@ def train(tyro_config: ExperimentConfig, training_context: TrainingContext | Non
         is_distributed = distributed_conf is not None
         is_main_process = distributed_conf is None or distributed_conf["local_rank"] == 0
 
+        # Optionally cap this process's PyTorch GPU memory so IsaacSim/PhysX -- which
+        # allocates GPU memory outside the torch caching allocator -- can share the
+        # same card. e.g. HOLOSOMA_GPU_MEM_FRACTION=0.55 limits the torch allocator to
+        # 55% of the GPU, leaving the rest for IsaacSim rendering + physics.
+        mem_fraction_env = os.environ.get("HOLOSOMA_GPU_MEM_FRACTION")
+        if mem_fraction_env and device.startswith("cuda"):
+            mem_fraction = float(mem_fraction_env)
+            torch.cuda.set_per_process_memory_fraction(mem_fraction, torch.device(device))
+            logger.info(f"Capped PyTorch GPU memory fraction to {mem_fraction:.2f} on {device}")
+
         # Configure logger
         logger_cfg = tyro_config.logger
         wandb_enabled = logger_cfg.type == "wandb"

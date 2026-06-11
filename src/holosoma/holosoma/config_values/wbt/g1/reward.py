@@ -93,6 +93,15 @@ g1_29dof_wbt_fast_sac_reward = RewardManagerCfg(
     }
 )
 
+# Fly-kick FastSAC reward, aligned with the kinematic world-model rollout reward.
+# We drop ``undesired_contacts`` because it depends on per-body contact *forces*,
+# which the world model cannot reproduce during rollout (its state carries contact
+# point positions/velocities only). All remaining terms are kinematic + action_rate
+# + joint-limit, every one of which the WM reward can recompute.
+g1_29dof_wbt_fast_sac_fly_kick_reward = RewardManagerCfg(
+    terms={k: v for k, v in g1_29dof_wbt_fast_sac_reward.terms.items() if k != "undesired_contacts"}
+)
+
 g1_29dof_wbt_reward_w_object = RewardManagerCfg(
     terms={
         **g1_29dof_wbt_reward.terms,
@@ -110,4 +119,9 @@ g1_29dof_wbt_reward_w_object = RewardManagerCfg(
     }
 )
 
-__all__ = ["g1_29dof_wbt_fast_sac_reward", "g1_29dof_wbt_reward", "g1_29dof_wbt_reward_w_object"]
+__all__ = [
+    "g1_29dof_wbt_fast_sac_reward",
+    "g1_29dof_wbt_fast_sac_fly_kick_reward",
+    "g1_29dof_wbt_reward",
+    "g1_29dof_wbt_reward_w_object",
+]

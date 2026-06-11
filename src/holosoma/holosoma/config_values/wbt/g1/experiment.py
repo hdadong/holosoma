@@ -134,6 +134,26 @@ g1_29dof_wbt_fast_sac = ExperimentConfig(
     ),
 )
 
+# Train a fly-kick WBT FastSAC policy from scratch in IsaacSim, for world-model
+# data collection. Frame-0 deterministic reset, WM-aligned reward (no
+# undesired_contacts), and episode stats logged every 1000 env steps.
+g1_29dof_wbt_fast_sac_fly_kick = replace(
+    g1_29dof_wbt_fast_sac,
+    training=replace(
+        g1_29dof_wbt_fast_sac.training,
+        name="g1_29dof_wbt_fast_sac_fly_kick",
+    ),
+    command=command.g1_29dof_wbt_command_fly_kick,
+    reward=reward.g1_29dof_wbt_fast_sac_fly_kick_reward,
+    algo=replace(
+        g1_29dof_wbt_fast_sac.algo,
+        config=replace(
+            g1_29dof_wbt_fast_sac.algo.config,
+            logging_interval=1000,
+        ),
+    ),
+)
+
 g1_29dof_wbt_w_object = replace(
     g1_29dof_wbt,
     command=command.g1_29dof_wbt_command_w_object,
@@ -213,6 +233,7 @@ g1_29dof_wbt_fast_sac_w_object_1kg_pre100_app100 = replace(
 __all__ = [
     "g1_29dof_wbt",
     "g1_29dof_wbt_fast_sac",
+    "g1_29dof_wbt_fast_sac_fly_kick",
     "g1_29dof_wbt_fast_sac_w_object",
     "g1_29dof_wbt_fast_sac_w_object_1kg_short_0_85",
     "g1_29dof_wbt_fast_sac_w_object_1kg_short_0_85_freeze100",
