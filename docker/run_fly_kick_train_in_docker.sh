@@ -28,7 +28,12 @@ HOLOSOMA_LOGS_DIR=${HOLOSOMA_LOGS_DIR:-/home/weidong/holosoma_fly_kick_logs}
 HOST_GPU=${HOST_GPU:-0}
 IMAGE=${IMAGE:-holosoma:wbt}
 GPU_MEM_FRACTION=${GPU_MEM_FRACTION:-0.55}   # torch allocator cap; IsaacSim uses the rest
-NUM_ENVS=${NUM_ENVS:-4096}
+# The replay buffer is num_envs * buffer_size transitions and lives in the torch
+# allocator, so num_envs * BUFFER_SIZE must fit under GPU_MEM_FRACTION. Defaults
+# below (2048 * 512 ~= 1M transitions, ~4 GB) fit the 55% cap on a 24 GB GPU; the
+# preset's 8192 * 1024 would need a full GPU. Raise both if you have more headroom.
+NUM_ENVS=${NUM_ENVS:-2048}
+BUFFER_SIZE=${BUFFER_SIZE:-512}              # replay buffer size PER ENV
 SEED=${SEED:-1}
 VIDEO_INTERVAL=${VIDEO_INTERVAL:-1}          # save a third-person mp4 every N episodes
 WANDB_MODE=${WANDB_MODE:-online}             # online | offline
@@ -46,7 +51,7 @@ if [ -n "${NUM_TIMESTEPS}" ]; then
 fi
 
 echo "[fly-kick-train] HOST_GPU=${HOST_GPU}  IMAGE=${IMAGE}  CONTAINER=${CONTAINER_NAME}"
-echo "[fly-kick-train] NUM_ENVS=${NUM_ENVS}  SEED=${SEED}  GPU_MEM_FRACTION=${GPU_MEM_FRACTION}"
+echo "[fly-kick-train] NUM_ENVS=${NUM_ENVS}  BUFFER_SIZE=${BUFFER_SIZE}  SEED=${SEED}  GPU_MEM_FRACTION=${GPU_MEM_FRACTION}"
 echo "[fly-kick-train] WANDB_MODE=${WANDB_MODE}  WANDB_ENTITY=${WANDB_ENTITY}  VIDEO_INTERVAL=${VIDEO_INTERVAL}"
 echo "[fly-kick-train] LOGS -> ${HOLOSOMA_LOGS_DIR} (container logs/)"
 echo "[fly-kick-train] num_learning_iterations override: '${NUM_TIMESTEPS:-<preset default>}'"
@@ -81,6 +86,7 @@ docker run --rm \
             --training.num-envs=${NUM_ENVS} \
             --training.seed=${SEED} \
             --training.headless=True \
+            --algo.config.buffer-size=${BUFFER_SIZE} \
             ${extra_iter_arg} \
             ${EXTRA_ARGS} \
             2>&1 | tee ${TRAIN_LOG}"
