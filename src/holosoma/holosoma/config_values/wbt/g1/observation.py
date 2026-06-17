@@ -4,7 +4,9 @@ from holosoma.config_types.observation import ObservationManagerCfg, ObsGroupCfg
 
 actor_obs_shared = ObsGroupCfg(
     concatenate=True,
-    enable_noise=True,
+    # LIFT-match: actor observation noise OFF (the GPU0-4 collected data is
+    # produced with obs corruption disabled; brax obs noise level is 0.0 too).
+    enable_noise=False,
     history_length=1,
     terms={
         "motion_command": ObsTermCfg(

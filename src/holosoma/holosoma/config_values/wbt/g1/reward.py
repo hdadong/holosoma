@@ -102,6 +102,26 @@ g1_29dof_wbt_fast_sac_fly_kick_reward = RewardManagerCfg(
     terms={k: v for k, v in g1_29dof_wbt_fast_sac_reward.terms.items() if k != "undesired_contacts"}
 )
 
+# LIFT3-matched FastSAC reward: identical to the GPU0-5 brax SAC reward
+# (mujoco_playground g1_tracking weak / "from-scratch" weights). It is the base
+# g1_29dof_wbt_reward (weak anchor/body/action weights + matching sigmas) but
+# with NO undesired_contacts (the GPU0-5 SAC trains on brax_compute_reward, which
+# has no contact penalty) and limits_dof_pos weight -10.0 (= brax dof_pos_limits)
+# instead of holosoma's -100.0. Net brax-matched weights:
+#   anchor_pos 0.5 (s0.3), anchor_ori 0.5 (s0.4), body_pos 1.0 (s0.3),
+#   body_ori 1.0 (s0.4), lin_vel 1.0 (s1.0), ang_vel 1.0 (s3.14),
+#   action_rate -0.1, dof_pos_limits -10.0.
+g1_29dof_wbt_fast_sac_lift_match_reward = RewardManagerCfg(
+    terms={
+        **{k: v for k, v in g1_29dof_wbt_reward.terms.items() if k != "undesired_contacts"},
+        "limits_dof_pos": RewardTermCfg(
+            func="holosoma.managers.reward.terms.wbt:limits_dof_pos",
+            params={"soft_dof_pos_limit": 0.9},
+            weight=-10.0,
+        ),
+    }
+)
+
 g1_29dof_wbt_reward_w_object = RewardManagerCfg(
     terms={
         **g1_29dof_wbt_reward.terms,
@@ -122,6 +142,7 @@ g1_29dof_wbt_reward_w_object = RewardManagerCfg(
 __all__ = [
     "g1_29dof_wbt_fast_sac_reward",
     "g1_29dof_wbt_fast_sac_fly_kick_reward",
+    "g1_29dof_wbt_fast_sac_lift_match_reward",
     "g1_29dof_wbt_reward",
     "g1_29dof_wbt_reward_w_object",
 ]

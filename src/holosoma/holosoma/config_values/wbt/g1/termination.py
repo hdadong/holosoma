@@ -14,8 +14,11 @@ g1_29dof_wbt_termination = TerminationManagerCfg(
         "bad_tracking": TerminationTermCfg(
             func="holosoma.managers.termination.terms.wbt:BadTracking",
             params={
-                # robot tracking
-                "bad_ref_pos_threshold": 0.5,
+                # robot tracking — LIFT-matched to the brax GPU0-4 done:
+                # z-only anchor/body position error (pos_z_only=True),
+                # anchor pos-z thresh 0.35, gravity-z ori thresh 0.8, body pos-z 0.25.
+                "pos_z_only": True,
+                "bad_ref_pos_threshold": 0.35,
                 "bad_ref_ori_threshold": 0.8,
                 "bad_motion_body_pos_threshold": 0.25,
                 # NOTE: body_names_to_track is shared with command_manager

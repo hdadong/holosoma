@@ -76,6 +76,18 @@ motion_config_w_object_pre100_app100_no_default_pose = replace(
     enable_default_pose_append=False,
 )
 
+# LIFT3 fight1 motion with adaptive motion-frame sampling (matches the GPU0-5
+# adaptive start-frame sampling). Reset init-pose noise turned OFF (all-zero
+# NoiseToInitialPoseConfig) to match the GPU0-4 collected data, whose collector
+# zeroes the reset pose/velocity/joint ranges (and the brax env resets exactly
+# onto the motion frame with no pose noise).
+motion_config_fight1_adaptive = replace(
+    motion_config,
+    motion_file="holosoma/data/motions/g1_29dof/whole_body_tracking/motion_fight1_subject2_cut2.npz",
+    use_adaptive_timesteps_sampler=True,
+    noise_to_initial_pose=NoiseToInitialPoseConfig(),
+)
+
 g1_29dof_wbt_command = CommandManagerCfg(
     params={},
     setup_terms={
@@ -94,6 +106,18 @@ g1_29dof_wbt_command = CommandManagerCfg(
     step_terms={
         "motion_command": CommandTermCfg(
             func="holosoma.managers.command.terms.wbt:MotionCommand",
+        )
+    },
+)
+
+g1_29dof_wbt_command_fight1_adaptive = replace(
+    g1_29dof_wbt_command,
+    setup_terms={
+        "motion_command": CommandTermCfg(
+            func="holosoma.managers.command.terms.wbt:MotionCommand",
+            params={
+                "motion_config": motion_config_fight1_adaptive,
+            },
         )
     },
 )
@@ -160,6 +184,7 @@ g1_29dof_wbt_command_w_object_pre100_app100_no_default_pose = replace(
 
 __all__ = [
     "g1_29dof_wbt_command",
+    "g1_29dof_wbt_command_fight1_adaptive",
     "g1_29dof_wbt_command_fly_kick",
     "g1_29dof_wbt_command_w_object",
     "g1_29dof_wbt_command_w_object_short_0_85_no_default_pose",

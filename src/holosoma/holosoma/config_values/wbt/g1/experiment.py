@@ -154,6 +154,30 @@ g1_29dof_wbt_fast_sac_fly_kick = replace(
     ),
 )
 
+# LIFT3-matched FastSAC baseline (Part C). Reward matched to the GPU0-5 brax SAC
+# (no undesired_contacts, weak weights), NO domain randomization, adaptive
+# motion-frame sampling, fight1 motion. FastSAC stays native (1 env-step/iter,
+# UTD as configured). logging_interval=1000 so the standard per-1000-step episode
+# stats line up with the windowed avg_total_reward / avg_episode_length metrics
+# (logged every 1000 env steps from the learn() loop).
+g1_29dof_wbt_fast_sac_lift_match = replace(
+    g1_29dof_wbt_fast_sac,
+    training=replace(
+        g1_29dof_wbt_fast_sac.training,
+        name="g1_29dof_wbt_fast_sac_lift_match",
+    ),
+    command=command.g1_29dof_wbt_command_fight1_adaptive,
+    reward=reward.g1_29dof_wbt_fast_sac_lift_match_reward,
+    randomization=randomization.g1_29dof_wbt_randomization_empty,
+    algo=replace(
+        g1_29dof_wbt_fast_sac.algo,
+        config=replace(
+            g1_29dof_wbt_fast_sac.algo.config,
+            logging_interval=1000,
+        ),
+    ),
+)
+
 g1_29dof_wbt_w_object = replace(
     g1_29dof_wbt,
     command=command.g1_29dof_wbt_command_w_object,
@@ -234,6 +258,7 @@ __all__ = [
     "g1_29dof_wbt",
     "g1_29dof_wbt_fast_sac",
     "g1_29dof_wbt_fast_sac_fly_kick",
+    "g1_29dof_wbt_fast_sac_lift_match",
     "g1_29dof_wbt_fast_sac_w_object",
     "g1_29dof_wbt_fast_sac_w_object_1kg_short_0_85",
     "g1_29dof_wbt_fast_sac_w_object_1kg_short_0_85_freeze100",

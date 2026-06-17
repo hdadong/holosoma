@@ -4,10 +4,12 @@ import copy
 import itertools
 import math
 import os
+import statistics
 from contextlib import contextmanager
 from typing import Any, Callable, Dict, Sequence
 
 import tqdm
+import wandb
 from loguru import logger
 
 from holosoma.agents.base_algo.base_algo import BaseAlgo
@@ -679,6 +681,18 @@ class FastSACAgent(BaseAlgo):
         actor_grad_norm = torch.tensor(0.0, device=device)
         pbar = tqdm.tqdm(total=args.num_learning_iterations, initial=self.global_step)
 
+        # ---- LIFT3 windowed metrics ----
+        # Per-env reward summed over each `lift_window` env-step window, averaged
+        # over all envs (reset each window) -> Metrics/avg_total_reward; plus the
+        # avg length of episodes that ENDED within the window ->
+        # Metrics/avg_episode_length. Matches the PPO baseline's 1000-step window
+        # (FastSAC collects 1 env-step/iter, so 1 window = 1000 iterations).
+        lift_window = 1000
+        lift_win_return = torch.zeros(env.num_envs, device=device)
+        lift_cur_ep_len = torch.zeros(env.num_envs, device=device)
+        lift_win_ep_lens: list[float] = []
+        lift_win_step = 0
+
         while self.global_step <= args.num_learning_iterations:
             # Synchronize curriculum metrics across GPUs before rollout
             if self.is_multi_gpu:
@@ -727,6 +741,37 @@ class FastSACAgent(BaseAlgo):
                 critic_obs = next_critic_obs
 
                 rb.extend(transition)
+
+            # ---- LIFT3 windowed metrics accumulation (per env step) ----
+            lift_win_return += rewards
+            lift_cur_ep_len += 1.0
+            lift_ended = (dones > 0) | (truncations > 0)
+            if bool(lift_ended.any()):
+                lift_win_ep_lens.extend(lift_cur_ep_len[lift_ended].detach().cpu().tolist())
+                lift_cur_ep_len[lift_ended] = 0.0
+            lift_win_step += 1
+            if lift_win_step >= lift_window:
+                if self.is_main_process and wandb.run is not None:
+                    lift_avg_total_reward = lift_win_return.mean().item()
+                    lift_avg_ep_len = statistics.mean(lift_win_ep_lens) if lift_win_ep_lens else 0.0
+                    wandb.log(
+                        {
+                            "Metrics/avg_total_reward": lift_avg_total_reward,
+                            "Metrics/avg_episode_length": lift_avg_ep_len,
+                            "Metrics/num_ended_episodes": float(len(lift_win_ep_lens)),
+                        },
+                        step=self.global_step,
+                    )
+                    logger.info(
+                        f"[lift-metrics] step={self.global_step} "
+                        f"avg_total_reward={lift_avg_total_reward:.4f} "
+                        f"avg_episode_length={lift_avg_ep_len:.2f} "
+                        f"(ended_episodes={len(lift_win_ep_lens)}, window={lift_window} steps)"
+                    )
+                # reset the window (keep lift_cur_ep_len: episodes can span windows)
+                lift_win_return.zero_()
+                lift_win_ep_lens = []
+                lift_win_step = 0
 
             # NOTE: args.batch_size is the global batch size
             batch_size = max(args.batch_size // env.num_envs // self.gpu_world_size, 1)
